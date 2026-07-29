@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>B-Intelligent — BMS Monitor (demo)</title>
+  <meta name="description" content="Vista previa estática del monitor solar Victron / JK BMS (modo laboratorio)." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #060d18;
+      --surface: #0f1e35;
+      --border: rgba(0, 245, 212, 0.25);
+      --text: #f5f8ff;
+      --muted: #9eb8d9;
+      --accent: #00f5d4;
+      --accent2: #7b61ff;
+      --solar: #ffd93d;
+      --load: #4fc3f7;
+      --battery: #00e676;
+      --grid: #b388ff;
+      --soc-on: #ff9f1c;
+      --soc-on-glow: #ffd93d;
+      --soc-off: #12243d;
+      --green: #00ff88;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Outfit, system-ui, sans-serif;
+      color: var(--text);
+      background: linear-gradient(145deg, #060d18 0%, #0a1a32 45%, #0d2847 100%);
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+    .banner {
+      margin-bottom: 1rem;
+      padding: 0.7rem 1rem;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 217, 61, 0.35);
+      background: rgba(255, 217, 61, 0.08);
+      color: #ffe9a3;
+      font-size: 0.9rem;
+    }
+    .banner a { color: var(--accent); }
+    .brand-tag {
+      display: inline-block;
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      border: 1px solid rgba(0, 245, 212, 0.45);
+      background: rgba(0, 245, 212, 0.08);
+    }
+    h1 {
+      margin: 0.6rem 0 0.35rem;
+      font-size: clamp(1.8rem, 4vw, 2.45rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg, var(--text) 0%, var(--accent) 55%, var(--accent2) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle { color: var(--muted); margin-bottom: 1.2rem; }
+    .soc-card, .flow, .cells, .health {
+      background: linear-gradient(160deg, rgba(15, 30, 53, 0.95) 0%, rgba(18, 40, 72, 0.88) 100%);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.2rem 1.4rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    }
+    .soc-label {
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .soc-value {
+      font-size: 2.5rem;
+      font-weight: 800;
+      margin: 0.35rem 0 0.65rem;
+      color: var(--green);
+      text-shadow: 0 0 24px currentColor;
+      transition: color 0.4s ease;
+    }
+    .soc-segments { display: flex; gap: 4px; height: 38px; margin: 0.65rem 0 0.35rem; }
+    .soc-seg { flex: 1; border-radius: 6px; min-height: 38px; transition: all 0.35s ease; }
+    .soc-seg.on {
+      background: linear-gradient(180deg, var(--soc-on-glow) 0%, var(--soc-on) 100%);
+      box-shadow: 0 0 10px rgba(255, 159, 28, 0.55);
+    }
+    .soc-seg.off {
+      background: var(--soc-off);
+      border: 1px solid rgba(42, 90, 154, 0.5);
+    }
+    .soc-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.75rem; }
+    .soc-source { color: var(--muted); font-size: 0.78rem; margin-top: 0.45rem; }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+      padding: 1rem;
+    }
+    @media (max-width: 800px) { .flow { grid-template-columns: 1fr 1fr; } }
+    .flow-item {
+      background: rgba(0, 0, 0, 0.22);
+      border-radius: 12px;
+      padding: 0.85rem 0.75rem;
+      text-align: center;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .flow-item span { display: block; color: var(--muted); font-size: 0.78rem; margin-bottom: 0.35rem; }
+    .flow-item strong { font-size: 1.25rem; font-weight: 800; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin: 0.25rem 0 1rem;
+      padding: 0.4rem 0.8rem;
+      border-radius: 999px;
+      background: rgba(0, 255, 136, 0.1);
+      border: 1px solid rgba(0, 255, 136, 0.35);
+      color: var(--green);
+      font-weight: 700;
+      font-size: 0.85rem;
+    }
+    .status .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.55; transform: scale(0.85); }
+    }
+    .cells h2, .health h2 {
+      margin: 0 0 0.85rem;
+      font-size: 1.05rem;
+      color: var(--accent);
+    }
+    .cell-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.55rem;
+    }
+    @media (max-width: 600px) { .cell-grid { grid-template-columns: repeat(2, 1fr); } }
+    .cell {
+      border-radius: 12px;
+      padding: 0.7rem 0.45rem 0.55rem;
+      text-align: center;
+      border: 2px solid #00c9a7;
+      background: linear-gradient(160deg, #0f5c52 0%, #0a3d38 100%);
+      box-shadow: 0 4px 14px rgba(0, 201, 167, 0.22);
+    }
+    .cell.max {
+      border-color: #00f5d4;
+      background: linear-gradient(160deg, #1565a8 0%, #0c3f6e 100%);
+      box-shadow: 0 0 16px rgba(0, 245, 212, 0.38);
+    }
+    .cell.min {
+      border-color: #ffd93d;
+      background: linear-gradient(160deg, #8a5a12 0%, #5c3a08 100%);
+      box-shadow: 0 0 14px rgba(255, 217, 61, 0.28);
+    }
+    .cell .id {
+      font-size: 0.72rem;
+      color: #c8daf0;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .cell .v { font-size: 1.08rem; font-weight: 800; margin-top: 0.2rem; }
+    .cell .tag {
+      display: inline-block;
+      margin-left: 0.25rem;
+      padding: 0.05rem 0.35rem;
+      border-radius: 999px;
+      font-size: 0.62rem;
+      font-weight: 800;
+      background: rgba(255, 255, 255, 0.18);
+    }
+    .health-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+    .health-grid div {
+      background: rgba(0, 0, 0, 0.22);
+      border-radius: 10px;
+      padding: 0.75rem;
+    }
+    .health-grid span { display: block; color: var(--muted); font-size: 0.75rem; margin-bottom: 0.25rem; }
+    .health-grid strong { font-size: 1.15rem; }
+    footer {
+      margin-top: 1.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+    footer code {
+      background: rgba(0, 245, 212, 0.08);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="banner">
+      Demo estática en GitHub Pages (datos simulados). El monitor real corre en local con
+      <code>streamlit run bms_web_monitor.py</code> —
+      <a href="https://github.com/Juanki58/solar-telemetry">código en el repo</a>.
+    </div>
+
+    <span class="brand-tag">B-Intelligent</span>
+    <h1>BMS Cloud Auditor</h1>
+    <p class="subtitle">Monitor de planta solar · Victron GX + JK BMS · LiFePO4</p>
+
+    <div class="status"><span class="dot"></span> SISTEMA ESTABLE · demo laboratorio</div>
+
+    <section class="soc-card">
+      <div class="soc-label">Estado de carga</div>
+      <div class="soc-value" id="socValue">⚡ SoC: 78.5%</div>
+      <div class="soc-segments" id="socBar" aria-hidden="true"></div>
+      <div class="soc-scale"><span>0%</span><span>50%</span><span>100%</span></div>
+      <div class="soc-source">Fuente SoC: simulación (GitHub Pages)</div>
+    </section>
+
+    <section class="flow" aria-label="Flujos de potencia">
+      <div class="flow-item">
+        <span>☀️ Solar</span>
+        <strong id="pv" style="color:var(--solar)">2.41 kW</strong>
+      </div>
+      <div class="flow-item">
+        <span>🏠 Consumo</span>
+        <strong id="load" style="color:var(--load)">1.12 kW</strong>
+      </div>
+      <div class="flow-item">
+        <span>🔋 Batería</span>
+        <strong id="bat" style="color:var(--battery)">+850 W</strong>
+      </div>
+      <div class="flow-item">
+        <span>🔌 Grid</span>
+        <strong id="grid" style="color:var(--grid)">0 W</strong>
+      </div>
+    </section>
+
+    <section class="cells">
+      <h2>Celdas JK BMS v19 — Batería 1 (demo)</h2>
+      <div class="cell-grid" id="cells"></div>
+    </section>
+
+    <section class="health">
+      <h2>Salud LiFePO4</h2>
+      <div class="health-grid">
+        <div><span>ΔV celdas</span><strong id="dv">32 mV</strong></div>
+        <div><span>Temperatura</span><strong id="temp">24.8 °C</strong></div>
+        <div><span>Capacidad banco</span><strong>20.0 kWh</strong></div>
+        <div><span>Modo</span><strong>Paralelo · sim</strong></div>
+      </div>
+    </section>
+
+    <footer>
+      Vista previa pública del dashboard. En planta real: Victron Modbus TCP + JK BMS TCP,
+      alertas WhatsApp opcionales y protección activa en <code>victron_industrial_bms_safety.py</code>.
+    </footer>
+  </div>
+
+  <script>
+    const SEGMENTS = 20;
+    let soc = 78.5;
+    const cells = Array.from({ length: 16 }, (_, i) => 3.30 + Math.sin(i * 0.7) * 0.02 + (i === 4 ? 0.04 : 0) + (i === 11 ? -0.035 : 0));
+
+    function fmtPower(w) {
+      const a = Math.abs(w);
+      if (a >= 1000) return (w / 1000).toFixed(2) + " kW";
+      return Math.round(w) + " W";
+    }
+
+    function renderSoc(value) {
+      const lit = Math.round(Math.min(100, Math.max(0, value)) / 100 * SEGMENTS);
+      const bar = document.getElementById("socBar");
+      bar.innerHTML = "";
+      for (let i = 0; i < SEGMENTS; i++) {
+        const d = document.createElement("div");
+        d.className = "soc-seg " + (i < lit ? "on" : "off");
+        bar.appendChild(d);
+      }
+      const el = document.getElementById("socValue");
+      el.textContent = "⚡ SoC: " + value.toFixed(1) + "%";
+      el.style.color = value <= 15 ? "#ff4757" : value <= 35 ? "#ff9f1c" : value <= 60 ? "#ffd93d" : "#00ff88";
+    }
+
+    function renderCells() {
+      const root = document.getElementById("cells");
+      const vmax = Math.max(...cells);
+      const vmin = Math.min(...cells);
+      root.innerHTML = "";
+      cells.forEach((v, i) => {
+        const card = document.createElement("div");
+        let cls = "cell";
+        let tag = "";
+        if (v === vmax) { cls += " max"; tag = '<span class="tag">MAX</span>'; }
+        if (v === vmin) { cls += " min"; tag = '<span class="tag">MIN</span>'; }
+        card.className = cls;
+        card.innerHTML = '<div class="id">C' + (i + 1) + tag + '</div><div class="v">' + v.toFixed(3) + " V</div>";
+        root.appendChild(card);
+      });
+      document.getElementById("dv").textContent = Math.round((vmax - vmin) * 1000) + " mV";
+    }
+
+    function tick() {
+      soc = Math.min(92, Math.max(55, soc + (Math.random() - 0.45) * 0.35));
+      const pv = 1800 + Math.random() * 900;
+      const load = 700 + Math.random() * 800;
+      const bat = pv - load - (Math.random() * 80);
+      document.getElementById("pv").textContent = fmtPower(pv);
+      document.getElementById("load").textContent = fmtPower(load);
+      document.getElementById("bat").textContent = (bat >= 0 ? "+" : "") + fmtPower(bat);
+      document.getElementById("grid").textContent = "0 W";
+      document.getElementById("temp").textContent = (23.5 + Math.random() * 2.2).toFixed(1) + " °C";
+      cells.forEach((_, i) => {
+        cells[i] += (Math.random() - 0.5) * 0.002;
+        cells[i] = Math.min(3.36, Math.max(3.24, cells[i]));
+      });
+      renderSoc(soc);
+      renderCells();
+    }
+
+    renderSoc(soc);
+    renderCells();
+    setInterval(tick, 2000);
+  </script>
+</body>
+</html>

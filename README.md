@@ -2,13 +2,16 @@
 
 Monitor de **planta solar y salud de baterías LiFePO4** (Victron GX + JK BMS).
 
-Repo independiente (extraído de `automation-scripts`).
+[![Monitor demo](docs/preview-bms-monitor.png)](https://juanki58.github.io/solar-telemetry/)
 
-| Servicio | URL por defecto |
-|----------|-----------------|
-| **BMS web monitor** | `http://0.0.0.0:8501` |
+**[▶ Abrir monitor (demo en GitHub Pages)](https://juanki58.github.io/solar-telemetry/)** — vista previa pública con datos simulados (como en otros repos). El dashboard real (planta / Modbus) se ejecuta en local con Streamlit.
 
-## Arranque
+| Servicio | URL |
+|----------|-----|
+| **Demo pública (Pages)** | https://juanki58.github.io/solar-telemetry/ |
+| **Monitor real (local)** | `http://127.0.0.1:8501` |
+
+## Arranque (monitor real)
 
 ```powershell
 cd C:\Users\juanc\projects\solar-telemetry
@@ -17,6 +20,8 @@ copy config.example.json config.json
 python -m pip install -r requirements.txt
 python -m streamlit run bms_web_monitor.py
 ```
+
+Modo laboratorio sin planta: en `config.json` pon `"default_mode": "sim"`.
 
 ## Scripts
 
@@ -28,6 +33,7 @@ python -m streamlit run bms_web_monitor.py
 | `jk_bms_client.py` | Cliente JK BMS v19 |
 | `config_loader.py` | Carga `config.json` |
 | `integrations/whatsapp_alerts.py` | Alertas opcionales WhatsApp Cloud API |
+| `docs/index.html` | Demo estática publicada en GitHub Pages |
 
 ## Config
 
