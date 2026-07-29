@@ -2,13 +2,15 @@
 
 Monitor de **planta solar y salud de baterías LiFePO4** (Victron GX + JK BMS).
 
-[![Monitor demo](docs/preview-bms-monitor.png)](https://juanki58.github.io/solar-telemetry/)
+[![Monitor demo](docs/preview-bms-monitor.png)](https://htmlpreview.github.io/?https://github.com/Juanki58/solar-telemetry/blob/main/docs/index.html)
 
-**[▶ Abrir monitor (demo en GitHub Pages)](https://juanki58.github.io/solar-telemetry/)** — vista previa pública con datos simulados (como en otros repos). El dashboard real (planta / Modbus) se ejecuta en local con Streamlit.
+**[▶ Abrir monitor (demo pública)](https://htmlpreview.github.io/?https://github.com/Juanki58/solar-telemetry/blob/main/docs/index.html)** — vista previa interactiva con datos simulados. El dashboard real (planta / Modbus) se ejecuta en local con Streamlit.
 
 | Servicio | URL |
 |----------|-----|
-| **Demo pública (Pages)** | https://juanki58.github.io/solar-telemetry/ |
+| **Demo pública (funciona ya)** | [Abrir monitor](https://htmlpreview.github.io/?https://github.com/Juanki58/solar-telemetry/blob/main/docs/index.html) |
+| **Misma demo (CDN)** | https://cdn.jsdelivr.net/gh/Juanki58/solar-telemetry@main/docs/index.html |
+| **GitHub Pages** (opcional) | https://juanki58.github.io/solar-telemetry/ — solo tras Settings → Pages → branch `main` / `/docs` |
 | **Monitor real (local)** | `http://127.0.0.1:8501` |
 
 ## Arranque (monitor real)
