@@ -1,0 +1,3 @@
+pyModbusTCP>=0.2.1
+streamlit>=1.28.0
+requests>=2.31.0
