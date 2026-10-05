@@ -1,7 +1,11 @@
 """
 Cliente Modbus TCP para JK BMS v19 — lectura de voltajes celda a celda.
 
-Mapa de registros (holding, escala mV → V con factor 1000):
+También soporta battery_source=victron|gx_can: cuando el JK va por CAN al
+Color Control / Cerbo (DVCC), no hay TCP :6481; se usan métricas de pack
+expuestas por Victron Modbus (sin celdas individuales).
+
+Mapa de registros JK (holding, escala mV → V con factor 1000):
   0x1200  CellVol0..15   (16 celdas, UINT16 cada una)
   0x1248  MinVolCellNbr / MaxVolCellNbr (UINT8 bajo / UINT8 alto)
   0x12A4  Temperatura batería 1 (UINT16, escala 0.1 °C)
@@ -27,7 +31,28 @@ JK_TEMPERATURE_SCALE = 10.0
 JK_DEFAULT_TIMEOUT_S = 2.0
 JK_FAIL_COOLDOWN_S = 30.0
 
+BATTERY_SOURCE_JK_TCP = "jk_tcp"
+BATTERY_SOURCE_VICTRON = "victron"
+BATTERY_SOURCE_GX_CAN = "gx_can"
+_VICTRON_SOURCES = frozenset({BATTERY_SOURCE_VICTRON, BATTERY_SOURCE_GX_CAN})
+
 _JK_FAIL_CACHE: dict[str, float] = {}
+
+
+def resolve_battery_source(cfg: dict | None) -> str:
+    """jk_tcp (default) | victron | gx_can (alias de victron)."""
+    raw = str((cfg or {}).get("battery_source") or BATTERY_SOURCE_JK_TCP).strip().lower()
+    if raw in ("gx", "can", "victron_can", "gx_can"):
+        return BATTERY_SOURCE_GX_CAN
+    if raw in ("victron", "gx_modbus", "system"):
+        return BATTERY_SOURCE_VICTRON
+    if raw in _VICTRON_SOURCES:
+        return raw
+    return BATTERY_SOURCE_JK_TCP
+
+
+def uses_victron_battery(cfg: dict | None) -> bool:
+    return resolve_battery_source(cfg) in _VICTRON_SOURCES
 
 
 def _jk_cache_key(bank_cfg: dict) -> str:
@@ -241,14 +266,94 @@ def _read_simulated_bank(
     }
 
 
-def fetch_all_batteries(cfg: dict, simulated: bool = False, sim_t: float | None = None) -> list[dict[str, Any]]:
-    """Lee todos los bancos configurados en cfg['batteries']."""
+def build_victron_pack_bank(
+    system_telemetry: dict | None = None,
+    cfg: dict | None = None,
+    *,
+    simulated: bool = False,
+) -> dict[str, Any]:
+    """
+    Banco a nivel de pack desde Victron GX (JK vía CAN/DVCC).
+
+    Sin celdas individuales: el servicio de batería agregado no expone
+    CellVol0..N por Modbus TCP estándar. Nunca marca jk_online=True.
+    """
+    cfg = cfg or {}
+    system = system_telemetry or {}
+    name = cfg.get("battery_pack_name") or "Batería (Victron GX / CAN)"
+    temp = system.get("max_pack_temperature")
+    if temp is None:
+        temp = system.get("battery_temperature")
+
+    if simulated and system.get("source") == "simulated":
+        data_source = "simulated"
+        source_label = "Simulación pack Victron (laboratorio)"
+    else:
+        data_source = "victron_gx"
+        source_label = "Victron GX Modbus (pack; celdas no expuestas vía CAN)"
+
+    return {
+        "id": "pack_victron",
+        "name": name,
+        "cells": [],
+        "cell_voltages": [],
+        "highest_cell_voltage": None,
+        "lowest_cell_voltage": None,
+        "max_cell_index": None,
+        "min_cell_index": None,
+        "max_pack_temperature": temp,
+        "min_pack_temperature": system.get("min_pack_temperature", temp),
+        "soc": system.get("soc"),
+        "pack_voltage": system.get("pack_voltage"),
+        "battery_current_a": system.get("battery_current_a"),
+        "battery_power_w": system.get("battery_power_w"),
+        "cell_voltage_source": source_label,
+        "data_source": data_source,
+        "cells_available": False,
+        "jk_online": False,
+        "jk_host": None,
+        "error": None,
+    }
+
+
+def fetch_all_batteries(
+    cfg: dict,
+    simulated: bool = False,
+    sim_t: float | None = None,
+    system_telemetry: dict | None = None,
+) -> list[dict[str, Any]]:
+    """Lee bancos JK TCP o un pack Victron según battery_source."""
+    if uses_victron_battery(cfg):
+        if simulated and (system_telemetry is None or system_telemetry.get("source") != "simulated"):
+            # Laboratorio sin telemetría de sistema: pack simulado vacío de celdas.
+            stub = {
+                "soc": 42.0,
+                "pack_voltage": 53.2,
+                "battery_current_a": -12.5,
+                "battery_power_w": -665.0,
+                "max_pack_temperature": 28.5,
+                "min_pack_temperature": 27.0,
+                "source": "simulated",
+            }
+            return [build_victron_pack_bank(stub, cfg, simulated=True)]
+        return [build_victron_pack_bank(system_telemetry, cfg, simulated=simulated)]
+
     banks_cfg = normalize_battery_configs(cfg)
     return [read_jk_bms_bank(bank, simulated=simulated, sim_t=sim_t) for bank in banks_cfg]
 
 
 def normalize_battery_configs(cfg: dict) -> list[dict]:
     """Devuelve la lista de baterías activas; crea un banco por defecto si falta."""
+    if uses_victron_battery(cfg):
+        return [
+            {
+                "id": "pack_victron",
+                "name": cfg.get("battery_pack_name") or "Batería (Victron GX / CAN)",
+                "enabled": True,
+                "cell_count": 0,
+            }
+        ]
+
     batteries = cfg.get("batteries")
     if batteries:
         return [b for b in batteries if b.get("enabled", True)]
@@ -300,14 +405,35 @@ def _resolve_system_soc(system_telemetry: dict, batteries: list[dict], cfg: dict
 
 
 def merge_battery_telemetry(system_telemetry: dict, batteries: list[dict], cfg: dict | None = None) -> dict:
-    """Combina telemetría Victron/simulada con datos JK por banco."""
+    """Combina telemetría Victron/simulada con datos JK por banco o pack GX."""
     cfg = cfg or {}
     merged = {**system_telemetry, "batteries": batteries}
+    merged["battery_source"] = resolve_battery_source(cfg)
+    merged["cells_available"] = False
 
     soc, soc_label = _resolve_system_soc(system_telemetry, batteries, cfg)
     merged["soc"] = soc
     merged["soc_source_label"] = soc_label
     merged["victron_soc"] = system_telemetry.get("soc")
+
+    if uses_victron_battery(cfg):
+        merged["cells_available"] = False
+        merged["cell_voltages"] = []
+        merged["highest_cell_voltage"] = None
+        merged["lowest_cell_voltage"] = None
+        merged["cell_voltage_source"] = (
+            "Celdas no disponibles — JK en CAN Victron (solo métricas de pack)"
+        )
+        # Pack V/I/T ya vienen del system; no inventar celdas ni marcar JK online.
+        if batteries:
+            pack = batteries[0]
+            if pack.get("max_pack_temperature") is not None:
+                merged["max_pack_temperature"] = pack["max_pack_temperature"]
+            if pack.get("min_pack_temperature") is not None:
+                merged["min_pack_temperature"] = pack["min_pack_temperature"]
+            if pack.get("pack_voltage") is not None:
+                merged["pack_voltage"] = pack["pack_voltage"]
+        return merged
 
     jk_banks = [b for b in batteries if b.get("cell_voltages") or b.get("cells")]
     if not jk_banks:
@@ -326,9 +452,11 @@ def merge_battery_telemetry(system_telemetry: dict, batteries: list[dict], cfg: 
         and not b.get("error")
     ]
 
-    merged["highest_cell_voltage"] = max(all_cells)
-    merged["lowest_cell_voltage"] = min(all_cells)
-    merged["cell_voltages"] = all_cells
+    if all_cells:
+        merged["highest_cell_voltage"] = max(all_cells)
+        merged["lowest_cell_voltage"] = min(all_cells)
+        merged["cell_voltages"] = all_cells
+        merged["cells_available"] = bool(online_banks)
 
     if online_banks:
         merged["cell_voltage_source"] = (

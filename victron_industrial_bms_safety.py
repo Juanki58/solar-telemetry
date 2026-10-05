@@ -23,7 +23,7 @@ from typing import Any
 from pyModbusTCP.client import ModbusClient
 
 from config_loader import load_configuration
-from jk_bms_client import fetch_all_batteries, merge_battery_telemetry
+from jk_bms_client import fetch_all_batteries, merge_battery_telemetry, uses_victron_battery
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,10 +78,29 @@ class VictronBmsSafetySupervisor:
 
     def read_bms_telemetry(self) -> dict[str, Any]:
         """
-        Lee telemetría REAL de bancos JK. No usa simulación intencional.
+        Lee telemetría REAL de bancos JK (o pack Victron si battery_source=victron).
 
         Si no hay datos JK fiables, marca source=unreliable y no permite writes.
+        En modo Victron/CAN no hay celdas: los cortes por celda quedan denegados.
         """
+        if uses_victron_battery(self.config):
+            merged = {
+                "soc": None,
+                "source": "unreliable",
+                "error": (
+                    "battery_source=victron/gx_can: sin celdas JK TCP. "
+                    "Cortes activos por celda no aplicables (solo pack vía GX)."
+                ),
+                "write_allowed": False,
+                "cells_available": False,
+                "batteries": fetch_all_batteries(self.config, simulated=False),
+                "house_consumption_w": 0,
+                "pv_power_w": 0,
+                "battery_power_w": 0,
+                "grid_power_w": 0,
+            }
+            return merged
+
         batteries = fetch_all_batteries(self.config, simulated=False, sim_t=None)
         system_stub = {
             "soc": None,

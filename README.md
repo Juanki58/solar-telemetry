@@ -168,9 +168,20 @@ El dashboard muestra un **banner muy visible** cuando los datos son simulados o 
 
 | Clave | Default | Significado |
 |-------|---------|-------------|
+| `battery_source` | `jk_tcp` | Origen de datos de batería: `jk_tcp` (Modbus TCP del JK) o `victron` / `gx_can` (pack vía GX) |
 | `safety_write_enabled` | `false` | Si `true`, el supervisor puede escribir registros Victron (experimental) |
 | `web_auth_password` | `""` | Password del monitor Streamlit (obligatorio en LAN) |
 | `web_auth_required_on_lan` | `true` | Bloquea UI si bind `0.0.0.0` sin password |
+
+### JK BMS en CAN al Color Control / Cerbo (DVCC)
+
+Si los JK **no** tienen IP propia en LAN y van por **cable CAN** al Color Control GX:
+
+- Pon `"battery_source": "victron"` (alias: `"gx_can"`).
+- **No** uses `jk_host` / TCP `6481`: esos timeouts son esperados (no hay servicio Modbus en `.34`/`.35`).
+- El monitor lee del GX (p. ej. `192.168.1.37`) SoC, voltaje de pack, corriente, potencia y temp si el unit de batería está configurado.
+- **Celdas individuales (C1…C16) no están disponibles** por Modbus estándar del servicio de batería agregado. La UI lo indica con honestidad (`jk_online` permanece `false`).
+- Para celdas celda-a-celda hace falta un JK con Modbus TCP en red (`battery_source: "jk_tcp"`).
 
 Preferible guardar la password en `.streamlit/secrets.toml` (no en git).
 

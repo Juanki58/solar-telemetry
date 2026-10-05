@@ -27,6 +27,7 @@ CORE_DEFAULTS: dict[str, Any] = {
     "t_charge_low": 0.0,
     "jk_port": 6481,
     "cell_count": 16,
+    "battery_source": "jk_tcp",
     "batteries": [],
 }
 
@@ -57,6 +58,20 @@ def normalize_config(cfg: dict[str, Any], *, loaded_keys: set[str] | None = None
         cfg["whatsapp_alerts_enabled"] = cfg["telegram_alerts_enabled"]
     if "whatsapp_alert_cooldown_s" not in loaded_keys and cfg.get("telegram_alert_cooldown_s") is not None:
         cfg["whatsapp_alert_cooldown_s"] = cfg["telegram_alert_cooldown_s"]
+
+    raw_src = str(cfg.get("battery_source") or "jk_tcp").strip().lower()
+    if raw_src in ("gx", "can", "victron_can", "gx_can"):
+        cfg["battery_source"] = "gx_can"
+    elif raw_src in ("victron", "gx_modbus", "system"):
+        cfg["battery_source"] = "victron"
+    else:
+        cfg["battery_source"] = "jk_tcp"
+
+    # En modo Victron/CAN no tiene sentido insistir en hosts JK TCP muertos.
+    if cfg["battery_source"] in ("victron", "gx_can"):
+        cfg.setdefault("battery_pack_name", "Batería (Victron GX / CAN)")
+        # No auto-generar batteries desde jk_host_* (evita timeouts a .34/.35).
+        return cfg
 
     jk_hosts = [cfg.get(f"jk_host_{i}") for i in range(1, 9) if cfg.get(f"jk_host_{i}")]
     if jk_hosts and not cfg.get("batteries"):

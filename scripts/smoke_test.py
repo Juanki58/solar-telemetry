@@ -133,7 +133,45 @@ def test_classify_data_state() -> None:
         )
         == "mixed_fallback"
     )
-    _ok("monitor: classify_data_state sim/error/live/fallback")
+    assert (
+        classify_data_state(
+            MODE_REAL,
+            {
+                "source": "modbus",
+                "soc": 50,
+                "batteries": [{"data_source": "victron_gx", "jk_online": False}],
+            },
+            {"battery_source": "victron"},
+        )
+        == "live"
+    )
+    _ok("monitor: classify_data_state sim/error/live/fallback/victron")
+
+
+def test_victron_battery_source_no_jk_online() -> None:
+    from jk_bms_client import fetch_all_batteries, merge_battery_telemetry, uses_victron_battery
+
+    cfg = {"battery_source": "victron", "battery_pack_name": "Pack test"}
+    assert uses_victron_battery(cfg)
+    system = {
+        "soc": 77.0,
+        "pack_voltage": 53.1,
+        "battery_current_a": -8.2,
+        "battery_power_w": -435.0,
+        "max_pack_temperature": 29.0,
+        "min_pack_temperature": 28.0,
+        "source": "modbus",
+    }
+    banks = fetch_all_batteries(cfg, simulated=False, system_telemetry=system)
+    assert len(banks) == 1
+    assert banks[0]["jk_online"] is False
+    assert banks[0]["data_source"] == "victron_gx"
+    assert banks[0]["cells"] == []
+    merged = merge_battery_telemetry(system, banks, cfg)
+    assert merged["cells_available"] is False
+    assert merged["highest_cell_voltage"] is None
+    assert "celdas" in merged["cell_voltage_source"].lower() or "CAN" in merged["cell_voltage_source"]
+    _ok("victron battery_source: pack sin celdas, jk_online=False")
 
 
 def test_docs_present() -> None:
@@ -151,6 +189,7 @@ def main() -> int:
         test_jk_sim_not_online,
         test_safety_dry_run_refuses_unreliable,
         test_classify_data_state,
+        test_victron_battery_source_no_jk_online,
         test_docs_present,
     ]
     failed = 0

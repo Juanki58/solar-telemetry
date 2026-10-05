@@ -20,7 +20,12 @@ if str(_INTEGRATIONS) not in sys.path:
 from whatsapp_alerts import send_whatsapp_alert
 
 from config_loader import load_configuration as _load_shared_configuration
-from jk_bms_client import fetch_all_batteries, merge_battery_telemetry
+from jk_bms_client import (
+    fetch_all_batteries,
+    merge_battery_telemetry,
+    resolve_battery_source,
+    uses_victron_battery,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,6 +93,8 @@ WEB_DEFAULTS = {
     "battery_capacity_kwh_per_unit": 10.0,
     "battery_bank_mode": "parallel",
     "soc_source": "victron",
+    "battery_source": "jk_tcp",
+    "battery_pack_name": "Batería (Victron GX / CAN)",
     "soc_alert_warning": 20.0,
     "soc_alert_critical": 10.0,
     "whatsapp_alerts_enabled": False,
@@ -100,6 +107,8 @@ WEB_DEFAULTS = {
     "battery_unit_id": None,
     "modbus_reg_battery_temperature": 282,
     "modbus_reg_battery_temperature_scale": 10,
+    "modbus_reg_system_current": 841,
+    "modbus_reg_system_current_scale": 10,
     "batteries": [],
     # Seguridad / auth
     "safety_write_enabled": False,
@@ -193,12 +202,20 @@ def enforce_web_auth(cfg: dict) -> bool:
     return False
 
 
-def classify_data_state(mode: str, telemetry: dict) -> str:
+def classify_data_state(mode: str, telemetry: dict, cfg: dict | None = None) -> str:
     """Estados visibles: live | simulated | connection_error | mixed_fallback."""
     source = telemetry.get("source")
     if mode != MODE_REAL or source == "simulated":
         return "simulated"
     if source == "modbus_error":
+        return "connection_error"
+    # JK en CAN vía Color Control: no hay TCP JK; Victron Modbus basta para "live".
+    if uses_victron_battery(cfg or telemetry) or telemetry.get("battery_source") in (
+        "victron",
+        "gx_can",
+    ):
+        if source == "modbus":
+            return "live"
         return "connection_error"
     batteries = telemetry.get("batteries") or []
     if batteries:
@@ -344,12 +361,62 @@ def _cell_card_html(cell_index: int, voltage: float, is_max: bool, is_min: bool,
 
 
 def render_battery_cells_panel(batteries: list[dict], cfg: dict):
-    """Grid 4×4 de botones con el voltaje de cada celda JK BMS v19."""
+    """Grid 4×4 de celdas JK, o métricas de pack si battery_source=victron."""
     if not batteries:
         return
 
     if "selected_cell" not in st.session_state:
         st.session_state.selected_cell = None
+
+    if uses_victron_battery(cfg):
+        st.markdown("### 🔋 Batería — pack vía Victron GX (CAN)")
+        st.caption(
+            "Los JK BMS van por CAN al Color Control / Cerbo (DVCC). "
+            "Modbus del GX expone el pack agregado; **no hay voltajes celda a celda**."
+        )
+        for battery in batteries:
+            name = battery.get("name", "Pack")
+            st.markdown(f"#### 🟢 Pack Victron · {name}")
+            cols = st.columns(4)
+            pack_v = battery.get("pack_voltage")
+            current = battery.get("battery_current_a")
+            power = battery.get("battery_power_w")
+            soc = battery.get("soc")
+            temp = battery.get("max_pack_temperature")
+            with cols[0]:
+                render_metric_card(
+                    "Voltaje pack",
+                    f"{pack_v:.2f} V" if pack_v is not None else "N/D",
+                    "Victron system reg 840",
+                    accent=METRIC_ACCENTS["cells"],
+                )
+            with cols[1]:
+                render_metric_card(
+                    "Corriente",
+                    f"{current:.1f} A" if current is not None else "N/D",
+                    "Victron system reg 841",
+                    accent=METRIC_ACCENTS["battery"],
+                )
+            with cols[2]:
+                render_metric_card(
+                    "Potencia",
+                    format_power_watts(power) if power is not None else "N/D",
+                    "Victron system reg 842",
+                    accent=METRIC_ACCENTS["battery"],
+                )
+            with cols[3]:
+                temp_txt = f"{temp:.1f} °C" if temp is not None else "N/D"
+                render_metric_card(
+                    "SoC / Temp",
+                    f"{soc:.1f}%" if soc is not None else "N/D",
+                    f"Temp pack: {temp_txt}",
+                    accent=METRIC_ACCENTS["temperature"],
+                )
+            st.info(
+                "Celdas individuales no disponibles por este camino. "
+                "Para ver C1…C16 hace falta JK con Modbus TCP (`battery_source: jk_tcp`)."
+            )
+        return
 
     st.markdown("### 🔬 Celdas JK BMS v19 — por batería")
     st.caption("Pulsa «Ver detalles» en una celda para ampliar. ▲ máxima · ▼ mínima del banco.")
@@ -368,6 +435,8 @@ def render_battery_cells_panel(batteries: list[dict], cfg: dict):
             status = "🧪 Simulado (laboratorio)"
         elif data_src in ("jk_fallback", "jk_unconfigured"):
             status = "🔴 Offline / fallback simulado"
+        elif data_src == "victron_gx":
+            status = "🟢 Pack Victron (sin celdas)"
         else:
             status = "🔴 Offline / estimado"
 
@@ -469,6 +538,30 @@ def render_cell_health_sidebar(telemetry: dict, cfg: dict):
 
     st.markdown("---")
     st.markdown("#### 🏥 Salud LiFePO4")
+
+    if uses_victron_battery(cfg):
+        pack_v = telemetry.get("pack_voltage")
+        current = telemetry.get("battery_current_a")
+        soc = telemetry.get("soc")
+        temp = telemetry.get("max_pack_temperature")
+        st.caption("Fuente: Victron GX (JK vía CAN) — sin drift/σ de celdas")
+        st.markdown(
+            '<div class="health-badge health-info">Pack agregado · celdas N/D</div>',
+            unsafe_allow_html=True,
+        )
+        c1, c2 = st.columns(2)
+        c1.metric("Pack", f"{pack_v:.1f} V" if pack_v is not None else "N/D")
+        c2.metric("SoC", f"{soc:.0f}%" if soc is not None else "N/D")
+        c3, c4 = st.columns(2)
+        c3.metric("I bat", f"{current:.1f} A" if current is not None else "N/D")
+        c4.metric("Temp", f"{temp:.1f} °C" if temp is not None else "N/D")
+        with st.expander("ℹ️ ¿Por qué no hay celdas?"):
+            st.write(
+                "Con JK en CAN al Color Control, Victron Modbus solo publica el servicio "
+                "de batería agregado (V/I/SoC/P). Los voltajes celda a celda requieren "
+                "`battery_source: jk_tcp` con el BMS en red."
+            )
+        return
 
     if batteries:
         for bank in batteries:
@@ -626,22 +719,36 @@ def read_simulated_telemetry(cfg: dict) -> dict:
     battery_w = -350 + 200 * math.sin(time.time() / 18)
     grid_w = house_w - pv_w - battery_w
     autonomy = estimate_autonomy_hours(soc, cfg.get("battery_capacity_kwh", 10.0), house_w)
-    cell_voltages = build_simulated_cell_voltages(cfg["cell_count"])
+    pack_voltage = 53.2 + 0.4 * math.sin(phase)
+    battery_current_a = round(battery_w / max(pack_voltage, 1.0), 1)
+
+    if uses_victron_battery(cfg):
+        cell_voltages: list[float] = []
+        cell_source = "Celdas no disponibles (modo Victron/CAN)"
+        v_high = None
+        v_low = None
+    else:
+        cell_voltages = build_simulated_cell_voltages(cfg["cell_count"])
+        cell_source = "Simulación laboratorio (JK)"
+        v_high = max(cell_voltages)
+        v_low = min(cell_voltages)
 
     return {
-        "highest_cell_voltage": max(cell_voltages),
-        "lowest_cell_voltage": min(cell_voltages),
+        "highest_cell_voltage": v_high,
+        "lowest_cell_voltage": v_low,
         "max_pack_temperature": 28.5,
         "min_pack_temperature": 27.0,
         "soc": round(soc, 1),
-        "pack_voltage": round(sum(cell_voltages), 2),
+        "pack_voltage": round(pack_voltage, 2),
+        "battery_current_a": battery_current_a,
         "house_consumption_w": round(house_w, 0),
         "pv_power_w": round(pv_w, 0),
         "battery_power_w": round(battery_w, 0),
         "grid_power_w": round(grid_w, 0),
         "autonomy_hours": autonomy,
         "cell_voltages": cell_voltages,
-        "cell_voltage_source": "Simulación laboratorio (JK)",
+        "cell_voltage_source": cell_source,
+        "cells_available": False,
         "source": "simulated",
         "error": None,
     }
@@ -767,9 +874,8 @@ def read_victron_modbus_telemetry(cfg: dict) -> dict:
                     type(exc).__name__,
                     exc,
                 )
-
-        if temperature is None:
-            temperature = 28.0
+            finally:
+                client.unit_id = unit_id
 
         try:
             house_consumption_w = read_ac_consumption_w(client, cfg)
@@ -784,31 +890,66 @@ def read_victron_modbus_telemetry(cfg: dict) -> dict:
         grid_power_w = read_modbus_register_w(
             client, cfg["modbus_reg_grid_power"], signed=True, label="Red"
         )
+
+        battery_current_a = None
+        current_reg = cfg.get("modbus_reg_system_current")
+        if current_reg is not None:
+            try:
+                cur_regs = client.read_holding_registers(int(current_reg), 1)
+                if cur_regs:
+                    raw_cur = _to_signed_int16(cur_regs[0])
+                    scale = float(cfg.get("modbus_reg_system_current_scale", 10) or 10)
+                    battery_current_a = round(raw_cur / scale, 2)
+                    logger.info(
+                        "Corriente batería OK — reg %s, raw=%s, I=%.2f A",
+                        current_reg,
+                        raw_cur,
+                        battery_current_a,
+                    )
+            except Exception as exc:
+                logger.warning("Corriente batería no leída (reg %s): %s", current_reg, exc)
+        if battery_current_a is None and pack_voltage:
+            battery_current_a = round(battery_power_w / pack_voltage, 2)
+
         autonomy_hours = estimate_autonomy_hours(
             soc, cfg.get("battery_capacity_kwh", 10.0), house_consumption_w
         )
 
-        cell_count = cfg["cell_count"]
-        spread = cfg["cell_spread_v"]
-        v_avg = pack_voltage / cell_count
-        v_max = round(v_avg + spread / 2, 3)
-        v_min = round(v_avg - spread / 2, 3)
-        cell_voltages = build_estimated_cell_voltages(v_min, v_max, cell_count)
+        # Honestidad: no inventar celdas desde el pack. En jk_tcp las rellena JK;
+        # en victron/gx_can se muestran solo métricas de pack.
+        if uses_victron_battery(cfg):
+            cell_voltages: list[float] = []
+            cell_source = "Celdas no disponibles — JK en CAN Victron"
+            v_high = None
+            v_low = None
+        else:
+            # Estimación suave solo como placeholder hasta que JK responda;
+            # merge_battery_telemetry la sustituye si hay lectura JK real/fallback.
+            cell_count = cfg["cell_count"]
+            spread = cfg["cell_spread_v"]
+            v_avg = pack_voltage / cell_count
+            v_high = round(v_avg + spread / 2, 3)
+            v_low = round(v_avg - spread / 2, 3)
+            cell_voltages = build_estimated_cell_voltages(v_low, v_high, cell_count)
+            cell_source = "Estimado desde pack Victron (pendiente JK TCP)"
 
         return {
-            "highest_cell_voltage": max(cell_voltages),
-            "lowest_cell_voltage": min(cell_voltages),
-            "max_pack_temperature": round(temperature, 1),
-            "min_pack_temperature": round(temperature - 1.0, 1),
+            "highest_cell_voltage": v_high,
+            "lowest_cell_voltage": v_low,
+            "max_pack_temperature": round(temperature, 1) if temperature is not None else None,
+            "min_pack_temperature": round(temperature - 1.0, 1) if temperature is not None else None,
+            "battery_temperature": round(temperature, 1) if temperature is not None else None,
             "soc": round(soc, 1),
             "pack_voltage": round(pack_voltage, 2),
+            "battery_current_a": battery_current_a,
             "house_consumption_w": round(house_consumption_w, 0),
             "pv_power_w": round(pv_power_w, 0),
             "battery_power_w": round(battery_power_w, 0),
             "grid_power_w": round(grid_power_w, 0),
             "autonomy_hours": autonomy_hours,
             "cell_voltages": cell_voltages,
-            "cell_voltage_source": "Estimado desde pack Victron",
+            "cell_voltage_source": cell_source,
+            "cells_available": False,
             "raw_soc": raw_soc,
             "source": "modbus",
             "error": None,
@@ -833,8 +974,11 @@ def fetch_telemetry(mode: str, cfg: dict) -> dict:
     else:
         system = read_simulated_telemetry(cfg)
 
-    batteries = fetch_all_batteries(cfg, simulated=simulated, sim_t=time.time())
+    batteries = fetch_all_batteries(
+        cfg, simulated=simulated, sim_t=time.time(), system_telemetry=system
+    )
     merged = merge_battery_telemetry(system, batteries, cfg)
+    merged["battery_source"] = resolve_battery_source(cfg)
 
     # Seguro extra: en paralelo el SoC del sistema es solo el del Cerbo GX.
     if cfg.get("battery_bank_mode", "parallel") == "parallel" and system.get("soc") is not None:
@@ -850,22 +994,34 @@ def fetch_telemetry(mode: str, cfg: dict) -> dict:
 
 
 def evaluate_plant_status(telemetry: dict, cfg: dict) -> tuple[str, str, str]:
-    v_max = telemetry["highest_cell_voltage"]
-    v_min = telemetry["lowest_cell_voltage"]
-    t_max = telemetry["max_pack_temperature"]
-    t_min = telemetry["min_pack_temperature"]
+    v_max = telemetry.get("highest_cell_voltage")
+    v_min = telemetry.get("lowest_cell_voltage")
+    t_max = telemetry.get("max_pack_temperature")
+    t_min = telemetry.get("min_pack_temperature")
+    pack_v = telemetry.get("pack_voltage")
+    soc = telemetry.get("soc")
 
     # Mensajes = umbrales / recomendación de monitor. No implican escritura Modbus.
-    if t_max >= cfg["t_critical_high"]:
+    if t_max is not None and t_max >= cfg["t_critical_high"]:
         return "CRITICAL", "UMBRAL: sobretemperatura — apagado de emergencia recomendado", COLOR_RED
-    if t_min <= cfg["t_charge_low"]:
+    if t_min is not None and t_min <= cfg["t_charge_low"]:
         return "CRITICAL", "UMBRAL: temperatura bajo cero — bloquear carga", COLOR_RED
-    if v_max >= cfg["v_cell_critical_high"]:
+    if v_max is not None and v_max >= cfg["v_cell_critical_high"]:
         return "CRITICAL", "UMBRAL: voltaje crítico de celda — carga a 0A recomendada", COLOR_RED
-    if v_min <= cfg["v_cell_critical_low"]:
+    if v_min is not None and v_min <= cfg["v_cell_critical_low"]:
         return "CRITICAL", "UMBRAL: sobredescarga de celda — descarga a 0A recomendada", COLOR_RED
-    if v_max >= cfg["v_cell_warning_high"]:
+    if v_max is not None and v_max >= cfg["v_cell_warning_high"]:
         return "WARNING", "UMBRAL: celda alta — reducción de carga preventiva", COLOR_YELLOW
+
+    # Sin celdas (modo Victron/CAN): umbrales de pack / SoC.
+    if uses_victron_battery(cfg) or telemetry.get("cells_available") is False:
+        if soc is not None and soc <= cfg.get("soc_alert_critical", 10):
+            return "CRITICAL", "UMBRAL: SoC crítico (pack Victron)", COLOR_RED
+        if soc is not None and soc <= cfg.get("soc_alert_warning", 20):
+            return "WARNING", "UMBRAL: SoC bajo (pack Victron)", COLOR_YELLOW
+        if pack_v is not None and pack_v > 0:
+            return "STABLE", "SISTEMA ESTABLE (pack Victron — sin celdas)", COLOR_GREEN
+
     return "STABLE", "SISTEMA ESTABLE (monitor)", COLOR_GREEN
 
 
@@ -1353,15 +1509,16 @@ def render_status_panel(level: str, message: str):
 
 def render_data_honesty_banners(mode: str, telemetry: dict, cfg: dict):
     """Banners muy visibles: simulado / error de conexión / planta real."""
-    state = classify_data_state(mode, telemetry)
+    state = classify_data_state(mode, telemetry, cfg)
     write_on = bool(cfg.get("safety_write_enabled", False))
+    bat_src = resolve_battery_source(cfg)
 
     if state == "simulated":
         st.markdown(
             f'<div class="alert-bar" style="background:#3d2a00;border:2px solid #ff9f1c;'
             f'font-size:1.05rem;padding:0.85rem 1rem;">'
             f'🧪 <b>DATOS SIMULADOS — NO ES PLANTA EN VIVO</b><br>'
-            f'Modo: <b>{mode}</b>. SoC {telemetry["soc"]:.1f}% y celdas son de laboratorio. '
+            f'Modo: <b>{mode}</b>. SoC {telemetry["soc"]:.1f}% y métricas son de laboratorio. '
             f'Selecciona <b>Real (Modbus)</b> y recarga (F5) para telemetría real.</div>',
             unsafe_allow_html=True,
         )
@@ -1380,15 +1537,25 @@ def render_data_honesty_banners(mode: str, telemetry: dict, cfg: dict):
             '<div class="alert-bar" style="background:#3d2a00;border:2px solid #ff9f1c;'
             'font-size:1.0rem;padding:0.85rem 1rem;">'
             "⚠ <b>Victron OK, JK sin lectura real</b> — celdas/temps pueden ser fallback simulado. "
-            "Revisa IPs JK y cableado Modbus.</div>",
+            "Si el JK va por CAN al Color Control, usa "
+            '<code>battery_source: "victron"</code> (no TCP 6481).</div>',
             unsafe_allow_html=True,
         )
     else:
+        if bat_src in ("victron", "gx_can"):
+            live_detail = (
+                "Victron Modbus pack · JK vía CAN — "
+                "<b>celdas individuales no disponibles</b>"
+            )
+        else:
+            live_detail = (
+                "Victron Modbus"
+                + ("" if not (telemetry.get("batteries")) else " + JK donde online")
+            )
         st.markdown(
             f'<div class="alert-bar" style="background:#0a3d28;border:1px solid #00ff88;'
             f'font-size:0.95rem;padding:0.65rem 1rem;">'
-            f'✅ <b>Telemetría en vivo</b> (Victron Modbus'
-            f'{"" if not (telemetry.get("batteries")) else " + JK donde online"}). '
+            f'✅ <b>Telemetría en vivo</b> ({live_detail}). '
             f'Cortes activos Victron: '
             f'{"⚠️ HABILITADOS (experimental)" if write_on else "OFF / dry-run (recomendado)"}.'
             f"</div>",
@@ -1410,27 +1577,31 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
     soc = telemetry["soc"]
     inject_corporate_theme()
 
-    v_max = telemetry["highest_cell_voltage"]
-    v_min = telemetry["lowest_cell_voltage"]
-    t_max = telemetry["max_pack_temperature"]
-    t_min = telemetry["min_pack_temperature"]
+    v_max = telemetry.get("highest_cell_voltage")
+    v_min = telemetry.get("lowest_cell_voltage")
+    t_max = telemetry.get("max_pack_temperature")
+    t_min = telemetry.get("min_pack_temperature")
+    pack_v = telemetry.get("pack_voltage")
+    bat_i = telemetry.get("battery_current_a")
     now = datetime.now().strftime("%H:%M:%S")
 
     render_data_honesty_banners(mode, telemetry, cfg)
 
-    data_state = classify_data_state(mode, telemetry)
+    data_state = classify_data_state(mode, telemetry, cfg)
     state_badge = {
         "live": "EN VIVO",
         "simulated": "SIMULADO",
         "connection_error": "ERROR CONEXIÓN",
         "mixed_fallback": "FALLBACK JK",
     }.get(data_state, data_state)
+    bat_src = resolve_battery_source(cfg)
+    src_badge = "Victron pack/CAN" if bat_src in ("victron", "gx_can") else "JK TCP"
 
     st.markdown('<p class="brand-tag">B-Intelligent</p>', unsafe_allow_html=True)
     st.markdown('<h1 class="brand-title">BMS Cloud Auditor</h1>', unsafe_allow_html=True)
     st.markdown(
         f'<p class="brand-subtitle">{cfg.get("plant_name", "B-Intelligent")} · '
-        f'Estado datos: <b>{state_badge}</b> · '
+        f'Estado datos: <b>{state_badge}</b> · Batería: <b>{src_badge}</b> · '
         f'Color Control GX · {cfg["victron_ip"]}:{cfg["modbus_port"]}</p>',
         unsafe_allow_html=True,
     )
@@ -1458,19 +1629,41 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
 
     col1, col2, col3 = st.columns(3, gap="medium")
     with col1:
-        render_metric_card(
-            "Voltaje de Celdas",
-            f"{v_max:.2f} V",
-            f"Mínima: {v_min:.2f} V · Δ celda: {(v_max - v_min) * 1000:.0f} mV · {modbus_note}",
-            accent=METRIC_ACCENTS["cells"],
-        )
+        if v_max is not None and v_min is not None:
+            render_metric_card(
+                "Voltaje de Celdas",
+                f"{v_max:.2f} V",
+                f"Mínima: {v_min:.2f} V · Δ celda: {(v_max - v_min) * 1000:.0f} mV · {modbus_note}",
+                accent=METRIC_ACCENTS["cells"],
+            )
+        else:
+            i_txt = f"{bat_i:.1f} A" if bat_i is not None else "I N/D"
+            render_metric_card(
+                "Voltaje del Pack",
+                f"{pack_v:.2f} V" if pack_v is not None else "N/D",
+                f"Celdas N/D (JK vía CAN) · {i_txt} · {modbus_note}",
+                accent=METRIC_ACCENTS["cells"],
+            )
     with col2:
-        render_metric_card(
-            "Temperatura del Pack",
-            f"{t_max:.1f} °C",
-            f"Mínima: {t_min:.1f} °C · Rango: {t_max - t_min:.1f} °C",
-            accent=METRIC_ACCENTS["temperature"],
-        )
+        if t_max is not None:
+            t_detail = (
+                f"Mínima: {t_min:.1f} °C · Rango: {t_max - t_min:.1f} °C"
+                if t_min is not None
+                else "Temp pack Victron"
+            )
+            render_metric_card(
+                "Temperatura del Pack",
+                f"{t_max:.1f} °C",
+                t_detail,
+                accent=METRIC_ACCENTS["temperature"],
+            )
+        else:
+            render_metric_card(
+                "Temperatura del Pack",
+                "N/D",
+                "Configura battery_unit_id si el GX expone temp por Modbus",
+                accent=METRIC_ACCENTS["temperature"],
+            )
     with col3:
         render_metric_card(
             "Consumo de la Casa",
@@ -1510,7 +1703,7 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
         "modbus": "Victron Modbus TCP en vivo",
         "modbus_error": "ERROR Modbus — fallback simulado (NO es planta real)",
     }.get(telemetry["source"], telemetry["source"])
-    data_state = classify_data_state(mode, telemetry)
+    data_state = classify_data_state(mode, telemetry, cfg)
 
     jk_soc_debug = " · ".join(
         f"{b.get('name', '?')}: {b['soc']}%"
