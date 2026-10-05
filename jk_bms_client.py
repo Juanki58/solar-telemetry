@@ -59,16 +59,18 @@ def read_jk_bms_bank(bank_cfg: dict, simulated: bool = False, sim_t: float | Non
     cell_count = int(bank_cfg.get("cell_count", 16))
 
     if simulated or not _is_valid_jk_host(bank_cfg.get("jk_host")):
-        result = _read_simulated_bank(bank_cfg, sim_t)
-        if bank_cfg.get("jk_host") and not _is_valid_jk_host(bank_cfg.get("jk_host")):
-            result["jk_online"] = False
-            result["cell_voltage_source"] = "JK BMS v19 — IP pendiente de configurar"
-            result["error"] = f"Host JK no configurado: {bank_cfg.get('jk_host')}"
+        if simulated:
+            result = _read_simulated_bank(bank_cfg, sim_t, data_source="simulated")
+            return result
+        result = _read_simulated_bank(bank_cfg, sim_t, data_source="jk_unconfigured")
+        result["jk_online"] = False
+        result["cell_voltage_source"] = "JK BMS v19 — IP pendiente de configurar"
+        result["error"] = f"Host JK no configurado: {bank_cfg.get('jk_host')}"
         return result
 
     cache_key = _jk_cache_key(bank_cfg)
     if _jk_recently_failed(cache_key):
-        fallback = _read_simulated_bank(bank_cfg, sim_t)
+        fallback = _read_simulated_bank(bank_cfg, sim_t, data_source="jk_fallback")
         fallback["jk_online"] = False
         fallback["cell_voltage_source"] = f"JK BMS v19 — cooldown ({bank_cfg['jk_host']})"
         fallback["error"] = "Conexión JK en cooldown tras fallo reciente"
@@ -169,6 +171,7 @@ def read_jk_bms_bank(bank_cfg: dict, simulated: bool = False, sim_t: float | Non
             "min_pack_temperature": (temperature - 1.0) if temperature is not None else 24.0,
             "soc": soc,
             "cell_voltage_source": f"JK BMS v19 Modbus ({host})",
+            "data_source": "jk_modbus",
             "jk_online": True,
             "jk_host": host,
             "error": None,
@@ -176,7 +179,7 @@ def read_jk_bms_bank(bank_cfg: dict, simulated: bool = False, sim_t: float | Non
     except Exception as exc:
         logger.error("JK %s FALLO (%s:%s): %s: %s", bank_name, host, port, type(exc).__name__, exc)
         _JK_FAIL_CACHE[cache_key] = time.time()
-        fallback = _read_simulated_bank(bank_cfg, sim_t)
+        fallback = _read_simulated_bank(bank_cfg, sim_t, data_source="jk_fallback")
         fallback["jk_online"] = False
         fallback["cell_voltage_source"] = f"JK BMS v19 — sin conexión ({host})"
         fallback["error"] = f"{type(exc).__name__}: {exc}"
@@ -185,8 +188,19 @@ def read_jk_bms_bank(bank_cfg: dict, simulated: bool = False, sim_t: float | Non
         client.close()
 
 
-def _read_simulated_bank(bank_cfg: dict, sim_t: float | None = None) -> dict[str, Any]:
-    """Genera 16 celdas simuladas con patrón distinto por banco."""
+def _read_simulated_bank(
+    bank_cfg: dict,
+    sim_t: float | None = None,
+    *,
+    data_source: str = "simulated",
+) -> dict[str, Any]:
+    """Genera 16 celdas simuladas con patrón distinto por banco.
+
+    data_source:
+      - simulated: laboratorio intencional (no es planta)
+      - jk_fallback: respaldo tras fallo de conexión
+      - jk_unconfigured: host JK inválido / pendiente
+    """
     bank_id = bank_cfg.get("id", "bank")
     bank_name = bank_cfg.get("name", bank_id)
     cell_count = int(bank_cfg.get("cell_count", 16))
@@ -201,6 +215,11 @@ def _read_simulated_bank(bank_cfg: dict, sim_t: float | None = None) -> dict[str
 
     temp = round(27.5 + 1.5 * math.sin(t / 40 + seed * 0.05), 1)
     soc = round(68 + 4 * math.sin(t / 50 + seed * 0.07), 1)
+    source_label = {
+        "simulated": "Simulación JK BMS v19 (laboratorio)",
+        "jk_fallback": "Simulación de respaldo (JK sin conexión)",
+        "jk_unconfigured": "Simulación (JK sin configurar)",
+    }.get(data_source, "Simulación JK BMS v19")
     return {
         "id": bank_id,
         "name": bank_name,
@@ -213,10 +232,12 @@ def _read_simulated_bank(bank_cfg: dict, sim_t: float | None = None) -> dict[str
         "max_pack_temperature": temp,
         "min_pack_temperature": round(temp - 1.2, 1),
         "soc": soc,
-        "cell_voltage_source": "Simulación JK BMS v19",
-        "jk_online": True,
+        "cell_voltage_source": source_label,
+        "data_source": data_source,
+        # Nunca marcar simulación/fallback como online real.
+        "jk_online": False,
         "jk_host": bank_cfg.get("jk_host"),
-        "error": None,
+        "error": None if data_source == "simulated" else f"data_source={data_source}",
     }
 
 
@@ -299,10 +320,10 @@ def merge_battery_telemetry(system_telemetry: dict, batteries: list[dict], cfg: 
     online_banks = [
         b
         for b in jk_banks
-        if b.get("jk_online")
+        if b.get("data_source") == "jk_modbus"
+        and b.get("jk_online")
         and b.get("jk_host")
-        and "sin conexión" not in (b.get("cell_voltage_source") or "")
-        and "cooldown" not in (b.get("cell_voltage_source") or "")
+        and not b.get("error")
     ]
 
     merged["highest_cell_voltage"] = max(all_cells)

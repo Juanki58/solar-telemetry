@@ -7,11 +7,15 @@ Monitor profesional de **planta solar y salud de baterías LiFePO4** (Victron GX
 **[▶ Demo pública (simulada)](https://htmlpreview.github.io/?https://github.com/Juanki58/solar-telemetry/blob/main/docs/index.html)** — vista previa en el navegador, sin planta.  
 El monitor real (Modbus / JK) se instala en Windows en 2 clics.
 
+> **⚠️ Seguridad:** esto **no es un BMS certificado**. Los cortes activos Modbus son **experimentales** y van en **dry-run por defecto**. Lee [`docs/SAFETY_DISCLAIMER.md`](docs/SAFETY_DISCLAIMER.md) antes de conectar a una planta real.
+
 | Qué | Dónde |
 |-----|--------|
 | Demo HTML | [htmlpreview](https://htmlpreview.github.io/?https://github.com/Juanki58/solar-telemetry/blob/main/docs/index.html) |
 | App local (PC) | `http://127.0.0.1:8501` tras instalar |
 | App Android | Carpeta [`android/`](android/) — WebView hacia el PC en LAN |
+| Aviso de seguridad | [`docs/SAFETY_DISCLAIMER.md`](docs/SAFETY_DISCLAIMER.md) |
+| Licencia | [`LICENSE`](LICENSE) (MIT) |
 
 ---
 
@@ -82,7 +86,15 @@ Detalle completo: [`android/README.md`](android/README.md).
 
 ### Apuntar el móvil al monitor del PC
 
-1. En el PC, arranca en modo LAN:
+1. **Obligatorio:** configura una contraseña antes del modo LAN:
+
+```json
+"web_auth_password": "tu-clave-segura"
+```
+
+en `config.json`, **o** copia `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml`.
+
+2. En el PC, arranca en modo LAN:
 
 ```text
 scripts\windows\Start-BIntelligent-LAN.bat
@@ -90,9 +102,11 @@ scripts\windows\Start-BIntelligent-LAN.bat
 
 (o `python launcher.py --host 0.0.0.0 --port 8501`)
 
-2. Permite el puerto **TCP 8501** en el firewall de Windows (red privada).
-3. Obtén la IP del PC (`ipconfig`, p. ej. `192.168.1.40`).
-4. En la app: menú → **Configurar servidor** → `http://192.168.1.40:8501`.
+Sin password, el launcher **bloquea** el arranque LAN (fail-closed). No uses `--allow-insecure-lan` fuera de un lab aislado.
+
+3. Permite el puerto **TCP 8501** en el firewall de Windows (red privada).
+4. Obtén la IP del PC (`ipconfig`, p. ej. `192.168.1.40`).
+5. En la app: menú → **Configurar servidor** → `http://192.168.1.40:8501`.
 
 PC y móvil deben compartir la misma Wi‑Fi. La primera ejecución pide la URL; también hay opción de abrir la **demo pública** sin planta.
 
@@ -112,11 +126,19 @@ python launcher.py
 Opciones del launcher:
 
 ```text
-python launcher.py --host 0.0.0.0 --port 8501   # visible en la LAN (móvil / Android)
+python launcher.py --host 0.0.0.0 --port 8501   # LAN — requiere web_auth_password
 python launcher.py --no-browser
+python launcher.py --allow-insecure-lan         # solo laboratorio (NO recomendado)
 ```
 
-Modo laboratorio sin Victron/JK: en `config.json` pon `"default_mode": "sim"`.
+Modo laboratorio sin Victron/JK: en `config.json` pon `"default_mode": "sim"`.  
+El dashboard muestra un **banner muy visible** cuando los datos son simulados o hay error de conexión — no se presentan como planta en vivo.
+
+### Smoke test
+
+```powershell
+.\.venv\Scripts\python.exe scripts\smoke_test.py
+```
 
 ---
 
@@ -124,14 +146,16 @@ Modo laboratorio sin Victron/JK: en `config.json` pon `"default_mode": "sim"`.
 
 | Archivo | Uso |
 |---------|-----|
-| `launcher.py` | Arranque tipo app (Streamlit + navegador) |
+| `launcher.py` | Arranque tipo app (Streamlit + navegador); fail-closed en LAN sin auth |
 | `bms_web_monitor.py` | Dashboard Streamlit (SoC, celdas JK, salud LiFePO4) |
 | `bms_gui_monitor.py` | Panel escritorio tkinter (alternativa ligera) |
-| `victron_industrial_bms_safety.py` | Protección activa Modbus Victron |
+| `victron_industrial_bms_safety.py` | Protección activa Modbus Victron (**dry-run por defecto**) |
 | `jk_bms_client.py` | Cliente JK BMS v19 |
 | `config_loader.py` | Carga `config.json` |
 | `integrations/whatsapp_alerts.py` | Alertas opcionales WhatsApp Cloud API |
 | `docs/index.html` | Demo estática (simulada) + PWA manifest |
+| `docs/SAFETY_DISCLAIMER.md` | Aviso de seguridad / no-BMS-certificado |
+| `scripts/smoke_test.py` | Smoke test de imports + dry-run safety |
 | `scripts/windows/*` | Instalación, arranque y accesos directos Windows |
 | `android/` | App WebView Kotlin/Gradle (cliente LAN) |
 | `assets/b-intelligent.ico` | Icono del acceso directo Windows |
@@ -139,14 +163,32 @@ Modo laboratorio sin Victron/JK: en `config.json` pon `"default_mode": "sim"`.
 ## Config
 
 - Plantilla: `config.example.json`
-- Local (no se sube): `config.json` — IPs Cerbo/JK, umbrales, WhatsApp
+- Local (no se sube): `config.json` — IPs Cerbo/JK, umbrales, WhatsApp, auth
+- Claves relevantes de seguridad comercial:
+
+| Clave | Default | Significado |
+|-------|---------|-------------|
+| `safety_write_enabled` | `false` | Si `true`, el supervisor puede escribir registros Victron (experimental) |
+| `web_auth_password` | `""` | Password del monitor Streamlit (obligatorio en LAN) |
+| `web_auth_required_on_lan` | `true` | Bloquea UI si bind `0.0.0.0` sin password |
+
+Preferible guardar la password en `.streamlit/secrets.toml` (no en git).
 
 ## Seguridad activa Victron
 
 ```powershell
-.\.venv\Scripts\python.exe victron_industrial_bms_safety.py
+.\.venv\Scripts\python.exe victron_industrial_bms_safety.py --once --dry-run
 ```
+
+- Por defecto: **DRY-RUN** (solo log). Habilitar escrituras: `"safety_write_enabled": true` **bajo tu responsabilidad**.
+- **Nunca escribe** si la telemetría es simulada, fallback o JK offline.
+- **No sustituye** un BMS hardware certificado. Ver [`docs/SAFETY_DISCLAIMER.md`](docs/SAFETY_DISCLAIMER.md).
+
+## Camino comercial (alcance actual)
+
+Este repo apunta a uso en **planta propia / laboratorio** con honestidad de datos y fail-closed en LAN.  
+**No** incluye en este paso: SaaS multi-tenant, publicación Play Store ni MSI firmado con code-signing.
 
 ## Licencia
 
-Uso personal / planta propia salvo que se indique lo contrario.
+[MIT](LICENSE) — ver también el aviso de seguridad vinculante en `LICENSE` y `docs/SAFETY_DISCLAIMER.md`.

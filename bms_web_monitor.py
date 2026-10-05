@@ -101,12 +101,113 @@ WEB_DEFAULTS = {
     "modbus_reg_battery_temperature": 282,
     "modbus_reg_battery_temperature_scale": 10,
     "batteries": [],
+    # Seguridad / auth
+    "safety_write_enabled": False,
+    "web_auth_password": "",
+    "web_auth_required_on_lan": True,
 }
 
 
 def load_configuration(config_path: Path = CONFIG_PATH) -> dict:
     """Carga config compartida + defaults del dashboard web."""
     return _load_shared_configuration(config_path, defaults=WEB_DEFAULTS)
+
+
+def _resolve_web_auth_password(cfg: dict) -> str:
+    """Password desde Streamlit secrets (preferido) o config.json."""
+    try:
+        # st.secrets lanza si no hay secrets.toml; no debe romper localhost.
+        secrets = getattr(st, "secrets", None)
+        if secrets is not None:
+            for key in ("web_auth_password", "BMS_WEB_PASSWORD"):
+                try:
+                    val = secrets[key]
+                except Exception:
+                    val = None
+                if val and str(val).strip():
+                    return str(val).strip()
+            try:
+                nested = secrets["bintelligent"]
+                if nested is not None and nested.get("web_auth_password"):
+                    return str(nested["web_auth_password"]).strip()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return str(cfg.get("web_auth_password") or "").strip()
+
+
+def _is_lan_bind() -> bool:
+    """True si el launcher/Streamlit escucha en todas las interfaces."""
+    import os
+
+    host = (
+        os.environ.get("BMS_BIND_HOST")
+        or os.environ.get("STREAMLIT_SERVER_ADDRESS")
+        or ""
+    ).strip().lower()
+    return host in ("0.0.0.0", "::", "[::]")
+
+
+def enforce_web_auth(cfg: dict) -> bool:
+    """
+    Gate de acceso mínimo.
+    - Si hay password configurado: exige login en session_state.
+    - Si LAN sin password y web_auth_required_on_lan: bloquea (fail closed).
+    Devuelve True si se puede mostrar el dashboard.
+    """
+    password = _resolve_web_auth_password(cfg)
+    lan = _is_lan_bind()
+
+    if lan and not password and cfg.get("web_auth_required_on_lan", True):
+        st.error(
+            "**Acceso LAN bloqueado:** el monitor está escuchando en `0.0.0.0` "
+            "sin contraseña. Configura `web_auth_password` en `config.json` o "
+            "en `.streamlit/secrets.toml` y reinicia."
+        )
+        st.code(
+            '# .streamlit/secrets.toml\nweb_auth_password = "tu-clave-segura"\n\n'
+            '# o en config.json\n"web_auth_password": "tu-clave-segura"',
+            language="toml",
+        )
+        st.warning(
+            "Sin autenticación, cualquiera en tu Wi‑Fi podría ver el estado de la planta. "
+            "Start-BIntelligent-LAN.bat requiere auth."
+        )
+        return False
+
+    if not password:
+        return True
+
+    if st.session_state.get("bintelligent_authenticated"):
+        return True
+
+    st.markdown("### B-Intelligent — acceso restringido")
+    st.caption("Introduce la contraseña configurada para el monitor web.")
+    entered = st.text_input("Contraseña", type="password", key="bintelligent_login_input")
+    if st.button("Entrar", type="primary"):
+        if entered == password:
+            st.session_state["bintelligent_authenticated"] = True
+            st.rerun()
+        st.error("Contraseña incorrecta.")
+    return False
+
+
+def classify_data_state(mode: str, telemetry: dict) -> str:
+    """Estados visibles: live | simulated | connection_error | mixed_fallback."""
+    source = telemetry.get("source")
+    if mode != MODE_REAL or source == "simulated":
+        return "simulated"
+    if source == "modbus_error":
+        return "connection_error"
+    batteries = telemetry.get("batteries") or []
+    if batteries:
+        real_jk = sum(1 for b in batteries if b.get("data_source") == "jk_modbus")
+        if real_jk == 0:
+            return "mixed_fallback"
+    if source == "modbus":
+        return "live"
+    return "connection_error"
 
 def _to_signed_int16(value: int) -> int:
     return value - 65536 if value >= 32768 else value
@@ -260,7 +361,15 @@ def render_battery_cells_panel(batteries: list[dict], cfg: dict):
         bank_name = battery.get("name", bank_id)
         online = battery.get("jk_online", False)
         source = battery.get("cell_voltage_source", "desconocido")
-        status = "🟢 Online" if online and not battery.get("error") else "🔴 Offline / estimado"
+        data_src = battery.get("data_source", "")
+        if online and data_src == "jk_modbus" and not battery.get("error"):
+            status = "🟢 Online (JK real)"
+        elif data_src == "simulated":
+            status = "🧪 Simulado (laboratorio)"
+        elif data_src in ("jk_fallback", "jk_unconfigured"):
+            status = "🔴 Offline / fallback simulado"
+        else:
+            status = "🔴 Offline / estimado"
 
         st.markdown(f"#### {status} · {bank_name}")
         if battery.get("soc") is not None:
@@ -374,7 +483,12 @@ def render_cell_health_sidebar(telemetry: dict, cfg: dict):
                 "error": "health-error",
             }.get(salud["tipo_alerta"], "health-info")
             bank_name = bank.get("name", bank.get("id", "Banco"))
-            online = "🟢" if bank.get("jk_online") and not bank.get("error") else "🔴"
+            if bank.get("data_source") == "jk_modbus" and bank.get("jk_online") and not bank.get("error"):
+                online = "🟢"
+            elif bank.get("data_source") == "simulated":
+                online = "🧪"
+            else:
+                online = "🔴"
             st.caption(f"{online} {bank_name} · {len(voltajes)} celdas · media {salud['media_v']:.3f} V")
             st.markdown(
                 f'<div class="health-badge {health_class}">{salud["estado"]}</div>',
@@ -741,17 +855,18 @@ def evaluate_plant_status(telemetry: dict, cfg: dict) -> tuple[str, str, str]:
     t_max = telemetry["max_pack_temperature"]
     t_min = telemetry["min_pack_temperature"]
 
+    # Mensajes = umbrales / recomendación de monitor. No implican escritura Modbus.
     if t_max >= cfg["t_critical_high"]:
-        return "CRITICAL", "APAGADO DE EMERGENCIA — SOBRETEMPERATURA", COLOR_RED
+        return "CRITICAL", "UMBRAL: sobretemperatura — apagado de emergencia recomendado", COLOR_RED
     if t_min <= cfg["t_charge_low"]:
-        return "CRITICAL", "CARGA BLOQUEADA — TEMPERATURA BAJO CERO", COLOR_RED
+        return "CRITICAL", "UMBRAL: temperatura bajo cero — bloquear carga", COLOR_RED
     if v_max >= cfg["v_cell_critical_high"]:
-        return "CRITICAL", "CARGA A 0A — VOLTAJE CRÍTICO DE CELDA", COLOR_RED
+        return "CRITICAL", "UMBRAL: voltaje crítico de celda — carga a 0A recomendada", COLOR_RED
     if v_min <= cfg["v_cell_critical_low"]:
-        return "CRITICAL", "DESCARGA A 0A — SOBREDESCARGA DE CELDA", COLOR_RED
+        return "CRITICAL", "UMBRAL: sobredescarga de celda — descarga a 0A recomendada", COLOR_RED
     if v_max >= cfg["v_cell_warning_high"]:
-        return "WARNING", "REDUCCIÓN DE CARGA PREVENTIVA — CELDA ALTA", COLOR_YELLOW
-    return "STABLE", "SISTEMA ESTABLE", COLOR_GREEN
+        return "WARNING", "UMBRAL: celda alta — reducción de carga preventiva", COLOR_YELLOW
+    return "STABLE", "SISTEMA ESTABLE (monitor)", COLOR_GREEN
 
 
 def build_soc_segment_bar(soc: float, total_segments: int = SOC_BAR_SEGMENTS) -> str:
@@ -1216,11 +1331,14 @@ def render_metric_card(label: str, value: str, detail: str, accent: str = COLOR_
 
 def render_status_panel(level: str, message: str):
     if level == "STABLE":
-        css_class, subtitle = "status-stable", "Sin alertas activas en la planta"
+        css_class, subtitle = "status-stable", "Solo monitor — sin escritura Modbus automática"
     elif level == "WARNING":
-        css_class, subtitle = "status-warning", "Acción preventiva recomendada"
+        css_class, subtitle = "status-warning", "Acción preventiva recomendada (no se escribe por defecto)"
     else:
-        css_class, subtitle = "status-critical", "Contramedida Modbus activada o requerida"
+        css_class, subtitle = (
+            "status-critical",
+            "Umbral crítico — cortes activos son experimentales y van OFF por defecto",
+        )
 
     st.markdown(
         f"""
@@ -1231,6 +1349,59 @@ def render_status_panel(level: str, message: str):
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_data_honesty_banners(mode: str, telemetry: dict, cfg: dict):
+    """Banners muy visibles: simulado / error de conexión / planta real."""
+    state = classify_data_state(mode, telemetry)
+    write_on = bool(cfg.get("safety_write_enabled", False))
+
+    if state == "simulated":
+        st.markdown(
+            f'<div class="alert-bar" style="background:#3d2a00;border:2px solid #ff9f1c;'
+            f'font-size:1.05rem;padding:0.85rem 1rem;">'
+            f'🧪 <b>DATOS SIMULADOS — NO ES PLANTA EN VIVO</b><br>'
+            f'Modo: <b>{mode}</b>. SoC {telemetry["soc"]:.1f}% y celdas son de laboratorio. '
+            f'Selecciona <b>Real (Modbus)</b> y recarga (F5) para telemetría real.</div>',
+            unsafe_allow_html=True,
+        )
+    elif state == "connection_error":
+        err = telemetry.get("error") or "sin detalle"
+        st.markdown(
+            f'<div class="alert-bar" style="background:#3d1010;border:2px solid #ff4757;'
+            f'font-size:1.05rem;padding:0.85rem 1rem;">'
+            f'🔌 <b>ERROR DE CONEXIÓN — mostrando respaldo simulado</b><br>'
+            f'Modbus/planta no responde: {err}. '
+            f'<b>No interpretes estos valores como estado real de la planta.</b></div>',
+            unsafe_allow_html=True,
+        )
+    elif state == "mixed_fallback":
+        st.markdown(
+            '<div class="alert-bar" style="background:#3d2a00;border:2px solid #ff9f1c;'
+            'font-size:1.0rem;padding:0.85rem 1rem;">'
+            "⚠ <b>Victron OK, JK sin lectura real</b> — celdas/temps pueden ser fallback simulado. "
+            "Revisa IPs JK y cableado Modbus.</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div class="alert-bar" style="background:#0a3d28;border:1px solid #00ff88;'
+            f'font-size:0.95rem;padding:0.65rem 1rem;">'
+            f'✅ <b>Telemetría en vivo</b> (Victron Modbus'
+            f'{"" if not (telemetry.get("batteries")) else " + JK donde online"}). '
+            f'Cortes activos Victron: '
+            f'{"⚠️ HABILITADOS (experimental)" if write_on else "OFF / dry-run (recomendado)"}.'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    if write_on:
+        st.markdown(
+            '<div class="alert-bar" style="background:#2a1030;border:2px solid #ff4757;">'
+            "⚠️ <b>safety_write_enabled=true</b> — el supervisor puede escribir en Victron. "
+            "No es un BMS certificado. Ver docs/SAFETY_DISCLAIMER.md</div>",
+            unsafe_allow_html=True,
+        )
 
 
 def render_dashboard(cfg: dict, mode: str, telemetry: dict):
@@ -1245,25 +1416,22 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
     t_min = telemetry["min_pack_temperature"]
     now = datetime.now().strftime("%H:%M:%S")
 
-    if mode != MODE_REAL or telemetry.get("source") in ("simulated", "modbus_error"):
-        sim_soc = f"{telemetry['soc']:.1f}%"
-        st.markdown(
-            f'<div class="alert-bar" style="background:#3d2a00;border-color:#ff9f1c;">'
-            f'⚠ Modo <b>{mode}</b> — SoC {sim_soc} es simulado. '
-            f'Selecciona <b>Real (Modbus)</b> en el panel lateral y recarga (F5).</div>',
-            unsafe_allow_html=True,
-        )
+    render_data_honesty_banners(mode, telemetry, cfg)
 
-    if telemetry.get("error"):
-        st.markdown(
-            f'<div class="alert-bar">⚠ Modbus: {telemetry["error"]} — mostrando respaldo simulado.</div>',
-            unsafe_allow_html=True,
-        )
+    data_state = classify_data_state(mode, telemetry)
+    state_badge = {
+        "live": "EN VIVO",
+        "simulated": "SIMULADO",
+        "connection_error": "ERROR CONEXIÓN",
+        "mixed_fallback": "FALLBACK JK",
+    }.get(data_state, data_state)
 
     st.markdown('<p class="brand-tag">B-Intelligent</p>', unsafe_allow_html=True)
     st.markdown('<h1 class="brand-title">BMS Cloud Auditor</h1>', unsafe_allow_html=True)
     st.markdown(
-        f'<p class="brand-subtitle">{cfg.get("plant_name", "B-Intelligent")} · Color Control GX · {cfg["victron_ip"]}:{cfg["modbus_port"]}</p>',
+        f'<p class="brand-subtitle">{cfg.get("plant_name", "B-Intelligent")} · '
+        f'Estado datos: <b>{state_badge}</b> · '
+        f'Color Control GX · {cfg["victron_ip"]}:{cfg["modbus_port"]}</p>',
         unsafe_allow_html=True,
     )
 
@@ -1279,7 +1447,14 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
     pv_value = format_power_watts(telemetry.get("pv_power_w", 0))
     bat_value, bat_detail = format_battery_power(telemetry.get("battery_power_w", 0))
     grid_value, grid_detail = format_grid_power(telemetry.get("grid_power_w", 0))
-    modbus_note = "Victron Modbus" if telemetry["source"] == "modbus" else "Simulación"
+    if data_state == "live":
+        modbus_note = "Victron Modbus"
+    elif data_state == "connection_error":
+        modbus_note = "Error conexión (simulado)"
+    elif data_state == "mixed_fallback":
+        modbus_note = "Parcial / fallback"
+    else:
+        modbus_note = "Simulación"
 
     col1, col2, col3 = st.columns(3, gap="medium")
     with col1:
@@ -1331,10 +1506,11 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
     render_battery_cells_panel(telemetry.get("batteries") or [], cfg)
 
     source_label = {
-        "simulated": "telemetría simulada",
+        "simulated": "telemetría simulada (laboratorio)",
         "modbus": "Victron Modbus TCP en vivo",
-        "modbus_error": "Modbus con fallback simulado",
+        "modbus_error": "ERROR Modbus — fallback simulado (NO es planta real)",
     }.get(telemetry["source"], telemetry["source"])
+    data_state = classify_data_state(mode, telemetry)
 
     jk_soc_debug = " · ".join(
         f"{b.get('name', '?')}: {b['soc']}%"
@@ -1348,8 +1524,12 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
     st.markdown(
         f"""
         <div class="footer-bar">
-            Última actualización: {now} · Muestreo cada {cfg["sample_interval_s"]}s · Modo: {mode} · Fuente: {source_label}
+            Última actualización: {now} · Muestreo cada {cfg["sample_interval_s"]}s ·
+            Modo: {mode} · Estado: {data_state} · Fuente: {source_label}
             <br><span style="font-size:0.78rem;color:#9eb8d9;">SoC sistema: {telemetry['soc']:.1f}%{soc_debug}</span>
+            <br><span style="font-size:0.72rem;color:#ff9f1c;">
+            Cortes activos Victron: experimentales · dry-run por defecto · no es BMS certificado
+            · docs/SAFETY_DISCLAIMER.md</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1365,7 +1545,13 @@ def main():
     )
 
     cfg = load_configuration()
-    default_index = 0 if cfg.get("default_mode", "simulated") == "simulated" else 1
+
+    # Auth antes del dashboard (LAN fail-closed sin password).
+    if not enforce_web_auth(cfg):
+        return
+
+    default_mode = str(cfg.get("default_mode", "real")).lower()
+    default_index = 0 if default_mode in ("simulated", "sim", "lab") else 1
 
     with st.sidebar:
         st.markdown(
@@ -1390,6 +1576,17 @@ def main():
             f'**WhatsApp:** <span style="color:{wa_color};font-weight:700;">{wa}</span>',
             unsafe_allow_html=True,
         )
+        write_on = bool(cfg.get("safety_write_enabled", False))
+        st.markdown(
+            f'**Cortes Victron:** <span style="color:{"#ff4757" if write_on else "#00ff88"};'
+            f'font-weight:700;">{"ON experimental" if write_on else "OFF (dry-run)"}</span>',
+            unsafe_allow_html=True,
+        )
+        st.caption("No es un BMS certificado. Ver docs/SAFETY_DISCLAIMER.md")
+        if _resolve_web_auth_password(cfg):
+            if st.button("Cerrar sesión"):
+                st.session_state["bintelligent_authenticated"] = False
+                st.rerun()
 
     interval = cfg["sample_interval_s"]
     telemetry = fetch_telemetry(mode, cfg)

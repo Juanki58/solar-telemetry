@@ -43,6 +43,11 @@
   "jk_host_1": "192.168.1.34",
   "jk_host_2": "192.168.1.35",
   "jk_port": 6481,
+  "safety_write_enabled": false,
+  "safety_require_jk_online": true,
+  "safety_loop_interval_s": 5,
+  "web_auth_password": "",
+  "web_auth_required_on_lan": true,
   "batteries": [
     {
       "name": "Batería 1",

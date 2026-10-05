@@ -9,6 +9,7 @@ y abre el navegador. Pensado para doble clic / acceso directo Windows.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -102,6 +103,61 @@ def wait_ready(host: str, port: int, timeout_s: float) -> bool:
     return False
 
 
+def is_non_local_bind(host: str) -> bool:
+    h = (host or "").strip().lower()
+    return h in ("0.0.0.0", "::", "[::]")
+
+
+def resolve_web_auth_password(config_path: Path) -> str:
+    """Lee web_auth_password de secrets.toml o config.json (sin Streamlit)."""
+    secrets_path = ROOT / ".streamlit" / "secrets.toml"
+    if secrets_path.exists():
+        try:
+            text = secrets_path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                raw = line.strip()
+                if raw.startswith("#") or "=" not in raw:
+                    continue
+                key, _, val = raw.partition("=")
+                key = key.strip()
+                if key in ("web_auth_password", "BMS_WEB_PASSWORD"):
+                    return val.strip().strip('"').strip("'")
+        except OSError:
+            pass
+
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8-sig"))
+            return str(data.get("web_auth_password") or "").strip()
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    return ""
+
+
+def enforce_lan_auth_or_exit(host: str) -> int | None:
+    """
+    Fail-closed: binding LAN sin password → no arrancar.
+    Devuelve código de error o None si OK.
+    """
+    if not is_non_local_bind(host):
+        return None
+
+    password = resolve_web_auth_password(CONFIG)
+    if password:
+        print("[launcher] Auth LAN: contraseña detectada (config/secrets).")
+        return None
+
+    _eprint(
+        "[launcher] BLOQUEADO: --host 0.0.0.0 (LAN) sin web_auth_password.\n"
+        "[launcher] Cualquiera en la Wi‑Fi podría ver el monitor.\n"
+        "[launcher] Configura una de estas opciones y reinicia:\n"
+        "  1) config.json → \"web_auth_password\": \"tu-clave\"\n"
+        "  2) .streamlit/secrets.toml → web_auth_password = \"tu-clave\"\n"
+        "[launcher] O usa solo localhost: Start-BIntelligent.bat (sin LAN)."
+    )
+    return 6
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Arranca el monitor BMS B-Intelligent")
     p.add_argument("--host", default=os.environ.get("BMS_HOST", DEFAULT_HOST))
@@ -114,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser",
         action="store_true",
         help="No abrir el navegador automáticamente",
+    )
+    p.add_argument(
+        "--allow-insecure-lan",
+        action="store_true",
+        help="Permitir LAN sin password (NO recomendado; solo laboratorio)",
     )
     return p
 
@@ -130,6 +191,16 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         _eprint(f"[launcher] {exc}")
         return 2
+
+    if not args.allow_insecure_lan:
+        auth_err = enforce_lan_auth_or_exit(args.host)
+        if auth_err is not None:
+            return auth_err
+    elif is_non_local_bind(args.host):
+        _eprint(
+            "[launcher] AVISO: LAN sin auth (--allow-insecure-lan). "
+            "No uses esto fuera de un laboratorio aislado."
+        )
 
     url = f"http://{args.host}:{args.port}"
     if port_open(args.host, args.port):
@@ -152,10 +223,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[launcher] Python {sys.version.split()[0]} — {sys.executable}")
     print(f"[launcher] Iniciando monitor en {url}")
+    if is_non_local_bind(args.host):
+        print("[launcher] Modo LAN: se requiere web_auth_password (fail-closed).")
     print("[launcher] Ctrl+C para detener.")
 
     env = os.environ.copy()
     env.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+    env["BMS_BIND_HOST"] = args.host
+    env["STREAMLIT_SERVER_ADDRESS"] = args.host
 
     try:
         proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env)
