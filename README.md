@@ -16,7 +16,8 @@ El monitor real (Modbus / JK) se instala en Windows en 2 clics.
 
 ## Instalación en Windows (recomendado)
 
-**Requisito:** [Python 3.10+](https://www.python.org/downloads/) con *Add python.exe to PATH*.
+**Requisito:** [Python **3.11 o 3.12**](https://www.python.org/downloads/) (recomendado) con *Add python.exe to PATH*.  
+Evita usar solo Python 3.13/3.14: Streamlit en Windows suele fallar. El instalador busca solo 3.10–3.12.
 
 1. Descarga o clona este repo.
 2. Doble clic en:
@@ -40,6 +41,7 @@ Eso crea `.venv`, instala dependencias, genera `config.json` y deja el acceso di
 scripts\windows\Start-BIntelligent.bat
 ```
 
+Si falta `.venv`, **Start** lanza la instalación automáticamente.  
 Se abre el navegador en `http://127.0.0.1:8501`.
 
 ### Desinstalar accesos directos
