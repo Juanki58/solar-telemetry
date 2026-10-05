@@ -3,16 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>B-Intelligent — BMS Monitor (demo)</title>
-  <meta name="description" content="Vista previa estática del monitor solar Victron / JK BMS (modo laboratorio)." />
+  <title>B-Intelligent — Monitor BMS (demo)</title>
+  <meta name="description" content="Vista previa del monitor solar Victron / JK BMS. Datos simulados — no es telemetría de planta." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #060d18;
-      --surface: #0f1e35;
-      --border: rgba(0, 245, 212, 0.25);
       --text: #f5f8ff;
       --muted: #9eb8d9;
       --accent: #00f5d4;
@@ -25,6 +22,10 @@
       --soc-on-glow: #ffd93d;
       --soc-off: #12243d;
       --green: #00ff88;
+      --yellow: #ffd93d;
+      --orange: #ff9f1c;
+      --red: #ff4757;
+      --border: rgba(0, 245, 212, 0.25);
     }
     * { box-sizing: border-box; }
     body {
@@ -45,6 +46,12 @@
       font-size: 0.9rem;
     }
     .banner a { color: var(--accent); }
+    .banner code {
+      background: rgba(0, 0, 0, 0.25);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      font-size: 0.85em;
+    }
     .brand-tag {
       display: inline-block;
       color: var(--accent);
@@ -62,13 +69,18 @@
       font-size: clamp(1.8rem, 4vw, 2.45rem);
       font-weight: 800;
       letter-spacing: -0.02em;
-      background: linear-gradient(90deg, var(--text) 0%, var(--accent) 55%, var(--accent2) 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
+      color: var(--text);
+    }
+    @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+      h1 {
+        background: linear-gradient(90deg, var(--text) 0%, var(--accent) 55%, var(--accent2) 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
     }
     .subtitle { color: var(--muted); margin-bottom: 1.2rem; }
-    .soc-card, .flow, .cells, .health {
+    .soc-card, .flow, .cells, .health, .banks {
       background: linear-gradient(160deg, rgba(15, 30, 53, 0.95) 0%, rgba(18, 40, 72, 0.88) 100%);
       border: 1px solid var(--border);
       border-radius: 18px;
@@ -92,7 +104,7 @@
       transition: color 0.4s ease;
     }
     .soc-segments { display: flex; gap: 4px; height: 38px; margin: 0.65rem 0 0.35rem; }
-    .soc-seg { flex: 1; border-radius: 6px; min-height: 38px; transition: all 0.35s ease; }
+    .soc-seg { flex: 1; border-radius: 6px; min-height: 38px; transition: background 0.35s ease, box-shadow 0.35s ease; }
     .soc-seg.on {
       background: linear-gradient(180deg, var(--soc-on-glow) 0%, var(--soc-on) 100%);
       box-shadow: 0 0 10px rgba(255, 159, 28, 0.55);
@@ -119,6 +131,13 @@
     }
     .flow-item span { display: block; color: var(--muted); font-size: 0.78rem; margin-bottom: 0.35rem; }
     .flow-item strong { font-size: 1.25rem; font-weight: 800; }
+    .balance-note {
+      grid-column: 1 / -1;
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-align: center;
+      margin-top: 0.15rem;
+    }
     .status {
       display: inline-flex;
       align-items: center;
@@ -126,26 +145,65 @@
       margin: 0.25rem 0 1rem;
       padding: 0.4rem 0.8rem;
       border-radius: 999px;
-      background: rgba(0, 255, 136, 0.1);
-      border: 1px solid rgba(0, 255, 136, 0.35);
-      color: var(--green);
       font-weight: 700;
       font-size: 0.85rem;
+      border: 1px solid transparent;
+      transition: background 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+    }
+    .status.stable {
+      background: rgba(0, 255, 136, 0.1);
+      border-color: rgba(0, 255, 136, 0.35);
+      color: var(--green);
+    }
+    .status.warning {
+      background: rgba(255, 217, 61, 0.12);
+      border-color: rgba(255, 217, 61, 0.4);
+      color: var(--yellow);
+    }
+    .status.critical {
+      background: rgba(255, 71, 87, 0.14);
+      border-color: rgba(255, 71, 87, 0.45);
+      color: var(--red);
     }
     .status .dot {
       width: 8px; height: 8px; border-radius: 50%;
-      background: var(--green);
-      box-shadow: 0 0 10px var(--green);
-      animation: pulse 1.6s ease-in-out infinite;
+      background: currentColor;
+      box-shadow: 0 0 10px currentColor;
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .status .dot { animation: pulse 1.6s ease-in-out infinite; }
     }
     @keyframes pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.55; transform: scale(0.85); }
     }
-    .cells h2, .health h2 {
+    .cells h2, .health h2, .banks h2 {
       margin: 0 0 0.85rem;
       font-size: 1.05rem;
       color: var(--accent);
+    }
+    .bank-tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 0.85rem;
+      flex-wrap: wrap;
+    }
+    .bank-tab {
+      appearance: none;
+      border: 1px solid rgba(0, 245, 212, 0.25);
+      background: rgba(0, 0, 0, 0.2);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 0.35rem 0.85rem;
+      font: inherit;
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .bank-tab[aria-selected="true"] {
+      color: #042018;
+      background: var(--accent);
+      border-color: var(--accent);
     }
     .cell-grid {
       display: grid;
@@ -170,6 +228,16 @@
       border-color: #ffd93d;
       background: linear-gradient(160deg, #8a5a12 0%, #5c3a08 100%);
       box-shadow: 0 0 14px rgba(255, 217, 61, 0.28);
+    }
+    .cell.warning {
+      border-color: #ffc107;
+      background: linear-gradient(160deg, #9a6d08 0%, #6b4a04 100%);
+      box-shadow: 0 0 14px rgba(255, 193, 7, 0.3);
+    }
+    .cell.critical {
+      border-color: #ff4757;
+      background: linear-gradient(160deg, #a81830 0%, #6e0d1f 100%);
+      box-shadow: 0 0 16px rgba(255, 71, 87, 0.35);
     }
     .cell .id {
       font-size: 0.72rem;
@@ -212,58 +280,76 @@
       border-radius: 4px;
       color: var(--accent);
     }
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="banner">
-      Demo estática en GitHub Pages (datos simulados). El monitor real corre en local con
-      <code>streamlit run bms_web_monitor.py</code> —
-      <a href="https://github.com/Juanki58/solar-telemetry">código en el repo</a>.
+    <div class="banner" role="note">
+      <strong>Demo local / GitHub</strong> — datos <em>simulados</em>, no conectados a Victron ni JK.
+      En Windows: <code>scripts\windows\Start-BIntelligent.bat</code> ·
+      <a href="https://github.com/Juanki58/solar-telemetry">código del repo</a>.
     </div>
 
-    <span class="brand-tag">B-Intelligent</span>
-    <h1>BMS Cloud Auditor</h1>
-    <p class="subtitle">Monitor de planta solar · Victron GX + JK BMS · LiFePO4</p>
+    <header>
+      <span class="brand-tag">B-Intelligent</span>
+      <h1>Monitor BMS</h1>
+      <p class="subtitle">Planta solar · Victron GX + JK BMS · LiFePO4 · vista previa de producto</p>
+    </header>
 
-    <div class="status"><span class="dot"></span> SISTEMA ESTABLE · demo laboratorio</div>
+    <div class="status stable" id="status" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="statusText">SISTEMA ESTABLE · demo laboratorio</span>
+    </div>
 
-    <section class="soc-card">
-      <div class="soc-label">Estado de carga</div>
-      <div class="soc-value" id="socValue">⚡ SoC: 78.5%</div>
-      <div class="soc-segments" id="socBar" aria-hidden="true"></div>
+    <section class="soc-card" aria-labelledby="socLabel">
+      <div class="soc-label" id="socLabel">Estado de carga</div>
+      <div class="soc-value" id="socValue" aria-live="polite">SoC: 78.5%</div>
+      <div class="soc-segments" id="socBar" role="img" aria-label="Barra de SoC"></div>
       <div class="soc-scale"><span>0%</span><span>50%</span><span>100%</span></div>
-      <div class="soc-source">Fuente SoC: simulación (GitHub Pages)</div>
+      <div class="soc-source">Fuente SoC: simulador de laboratorio (no Modbus)</div>
     </section>
 
     <section class="flow" aria-label="Flujos de potencia">
       <div class="flow-item">
-        <span>☀️ Solar</span>
+        <span>Solar</span>
         <strong id="pv" style="color:var(--solar)">2.41 kW</strong>
       </div>
       <div class="flow-item">
-        <span>🏠 Consumo</span>
+        <span>Consumo</span>
         <strong id="load" style="color:var(--load)">1.12 kW</strong>
       </div>
       <div class="flow-item">
-        <span>🔋 Batería</span>
+        <span>Batería</span>
         <strong id="bat" style="color:var(--battery)">+850 W</strong>
       </div>
       <div class="flow-item">
-        <span>🔌 Grid</span>
+        <span>Red</span>
         <strong id="grid" style="color:var(--grid)">0 W</strong>
       </div>
+      <p class="balance-note" id="balanceNote">Balance: PV − Consumo − Batería − Red = 0 W</p>
     </section>
 
-    <section class="cells">
-      <h2>Celdas JK BMS v19 — Batería 1 (demo)</h2>
-      <div class="cell-grid" id="cells"></div>
+    <section class="banks" aria-labelledby="cellsTitle">
+      <h2 id="cellsTitle">Celdas JK BMS v19</h2>
+      <div class="bank-tabs" role="tablist" aria-label="Banco de baterías">
+        <button type="button" class="bank-tab" role="tab" id="tab0" aria-selected="true" aria-controls="cells">Batería 1</button>
+        <button type="button" class="bank-tab" role="tab" id="tab1" aria-selected="false" aria-controls="cells">Batería 2</button>
+      </div>
+      <div class="cell-grid" id="cells" role="tabpanel" aria-labelledby="tab0"></div>
     </section>
 
-    <section class="health">
-      <h2>Salud LiFePO4</h2>
+    <section class="health" aria-labelledby="healthTitle">
+      <h2 id="healthTitle">Salud LiFePO4</h2>
       <div class="health-grid">
-        <div><span>ΔV celdas</span><strong id="dv">32 mV</strong></div>
+        <div><span>ΔV celdas (banco activo)</span><strong id="dv">32 mV</strong></div>
         <div><span>Temperatura</span><strong id="temp">24.8 °C</strong></div>
         <div><span>Capacidad banco</span><strong>20.0 kWh</strong></div>
         <div><span>Modo</span><strong>Paralelo · sim</strong></div>
@@ -271,75 +357,255 @@
     </section>
 
     <footer>
-      Vista previa pública del dashboard. En planta real: Victron Modbus TCP + JK BMS TCP,
-      alertas WhatsApp opcionales y protección activa en <code>victron_industrial_bms_safety.py</code>.
+      Vista previa pública. En planta: Victron Modbus TCP + JK BMS TCP,
+      alertas WhatsApp opcionales y protección en <code>victron_industrial_bms_safety.py</code>.
+      Instalación Windows: carpeta <code>scripts/windows/</code>.
     </footer>
   </div>
 
   <script>
-    const SEGMENTS = 20;
-    let soc = 78.5;
-    const cells = Array.from({ length: 16 }, (_, i) => 3.30 + Math.sin(i * 0.7) * 0.02 + (i === 4 ? 0.04 : 0) + (i === 11 ? -0.035 : 0));
+    (function () {
+      "use strict";
 
-    function fmtPower(w) {
-      const a = Math.abs(w);
-      if (a >= 1000) return (w / 1000).toFixed(2) + " kW";
-      return Math.round(w) + " W";
-    }
+      const SEGMENTS = 20;
+      const V_WARN_HIGH = 3.45;
+      const V_CRIT_HIGH = 3.60;
+      const V_CRIT_LOW = 2.60;
+      const T_CRIT_HIGH = 55;
+      const SOC_WARN = 20;
+      const SOC_CRIT = 10;
+      const TICK_MS = 2000;
 
-    function renderSoc(value) {
-      const lit = Math.round(Math.min(100, Math.max(0, value)) / 100 * SEGMENTS);
-      const bar = document.getElementById("socBar");
-      bar.innerHTML = "";
+      const els = {
+        status: document.getElementById("status"),
+        statusText: document.getElementById("statusText"),
+        socValue: document.getElementById("socValue"),
+        socBar: document.getElementById("socBar"),
+        pv: document.getElementById("pv"),
+        load: document.getElementById("load"),
+        bat: document.getElementById("bat"),
+        grid: document.getElementById("grid"),
+        balanceNote: document.getElementById("balanceNote"),
+        cells: document.getElementById("cells"),
+        dv: document.getElementById("dv"),
+        temp: document.getElementById("temp"),
+        tab0: document.getElementById("tab0"),
+        tab1: document.getElementById("tab1"),
+      };
+
+      let soc = 78.5;
+      let tempC = 24.8;
+      let activeBank = 0;
+      let scenario = "normal"; // normal | low_soc | cell_high | hot
+      let scenarioTicks = 0;
+
+      const banks = [
+        makeBank(0),
+        makeBank(1),
+      ];
+
       for (let i = 0; i < SEGMENTS; i++) {
         const d = document.createElement("div");
-        d.className = "soc-seg " + (i < lit ? "on" : "off");
-        bar.appendChild(d);
+        d.className = "soc-seg off";
+        els.socBar.appendChild(d);
       }
-      const el = document.getElementById("socValue");
-      el.textContent = "⚡ SoC: " + value.toFixed(1) + "%";
-      el.style.color = value <= 15 ? "#ff4757" : value <= 35 ? "#ff9f1c" : value <= 60 ? "#ffd93d" : "#00ff88";
-    }
+      const segNodes = Array.from(els.socBar.children);
 
-    function renderCells() {
-      const root = document.getElementById("cells");
-      const vmax = Math.max(...cells);
-      const vmin = Math.min(...cells);
-      root.innerHTML = "";
-      cells.forEach((v, i) => {
-        const card = document.createElement("div");
-        let cls = "cell";
-        let tag = "";
-        if (v === vmax) { cls += " max"; tag = '<span class="tag">MAX</span>'; }
-        if (v === vmin) { cls += " min"; tag = '<span class="tag">MIN</span>'; }
-        card.className = cls;
-        card.innerHTML = '<div class="id">C' + (i + 1) + tag + '</div><div class="v">' + v.toFixed(3) + " V</div>";
-        root.appendChild(card);
-      });
-      document.getElementById("dv").textContent = Math.round((vmax - vmin) * 1000) + " mV";
-    }
+      function makeBank(seed) {
+        return Array.from({ length: 16 }, (_, i) =>
+          3.30 + Math.sin((i + seed) * 0.7) * 0.02 + (i === 4 + seed ? 0.035 : 0) + (i === 11 - seed ? -0.03 : 0)
+        );
+      }
 
-    function tick() {
-      soc = Math.min(92, Math.max(55, soc + (Math.random() - 0.45) * 0.35));
-      const pv = 1800 + Math.random() * 900;
-      const load = 700 + Math.random() * 800;
-      const bat = pv - load - (Math.random() * 80);
-      document.getElementById("pv").textContent = fmtPower(pv);
-      document.getElementById("load").textContent = fmtPower(load);
-      document.getElementById("bat").textContent = (bat >= 0 ? "+" : "") + fmtPower(bat);
-      document.getElementById("grid").textContent = "0 W";
-      document.getElementById("temp").textContent = (23.5 + Math.random() * 2.2).toFixed(1) + " °C";
-      cells.forEach((_, i) => {
-        cells[i] += (Math.random() - 0.5) * 0.002;
-        cells[i] = Math.min(3.36, Math.max(3.24, cells[i]));
-      });
+      function fmtPower(watts) {
+        const sign = watts > 0.5 ? "+" : watts < -0.5 ? "−" : "";
+        const a = Math.abs(watts);
+        if (a >= 1000) return sign + (a / 1000).toFixed(2) + " kW";
+        return sign + Math.round(a) + " W";
+      }
+
+      function socColor(value) {
+        if (value <= SOC_CRIT) return "var(--red)";
+        if (value <= SOC_WARN) return "var(--orange)";
+        if (value <= 60) return "var(--yellow)";
+        return "var(--green)";
+      }
+
+      function argExtreme(arr, preferMax) {
+        let idx = 0;
+        for (let i = 1; i < arr.length; i++) {
+          if (preferMax ? arr[i] > arr[idx] : arr[i] < arr[idx]) idx = i;
+        }
+        return idx;
+      }
+
+      function evaluateStatus(cells, socVal, temperature) {
+        const vmax = Math.max(...cells);
+        const vmin = Math.min(...cells);
+        if (temperature >= T_CRIT_HIGH) {
+          return { level: "critical", message: "CRÍTICO — SOBRETEMPERATURA (demo)" };
+        }
+        if (vmax >= V_CRIT_HIGH) {
+          return { level: "critical", message: "CRÍTICO — CELDA ALTA (demo)" };
+        }
+        if (vmin <= V_CRIT_LOW) {
+          return { level: "critical", message: "CRÍTICO — CELDA BAJA (demo)" };
+        }
+        if (socVal <= SOC_CRIT) {
+          return { level: "critical", message: "CRÍTICO — SoC " + socVal.toFixed(1) + "%" };
+        }
+        if (vmax >= V_WARN_HIGH || socVal <= SOC_WARN) {
+          const why = vmax >= V_WARN_HIGH ? "CELDA EN AVISO" : "SoC BAJO";
+          return { level: "warning", message: "AVISO — " + why + " (demo)" };
+        }
+        return { level: "stable", message: "SISTEMA ESTABLE · demo laboratorio" };
+      }
+
+      function renderSoc(value) {
+        const lit = Math.round(Math.min(100, Math.max(0, value)) / 100 * SEGMENTS);
+        for (let i = 0; i < SEGMENTS; i++) {
+          segNodes[i].className = "soc-seg " + (i < lit ? "on" : "off");
+        }
+        els.socValue.textContent = "SoC: " + value.toFixed(1) + "%";
+        els.socValue.style.color = socColor(value);
+      }
+
+      function renderStatus(info) {
+        els.status.className = "status " + info.level;
+        els.statusText.textContent = info.message;
+      }
+
+      function renderCells(cells) {
+        const maxIdx = argExtreme(cells, true);
+        const minIdx = argExtreme(cells, false);
+        const root = els.cells;
+        while (root.firstChild) root.removeChild(root.firstChild);
+
+        cells.forEach((v, i) => {
+          const card = document.createElement("div");
+          let cls = "cell";
+          const tags = [];
+          if (v >= V_CRIT_HIGH || v <= V_CRIT_LOW) cls += " critical";
+          else if (v >= V_WARN_HIGH) cls += " warning";
+          if (i === maxIdx) { cls += " max"; tags.push("MAX"); }
+          else if (i === minIdx) { cls += " min"; tags.push("MIN"); }
+          card.className = cls;
+
+          const id = document.createElement("div");
+          id.className = "id";
+          id.textContent = "C" + (i + 1);
+          tags.forEach((t) => {
+            const tag = document.createElement("span");
+            tag.className = "tag";
+            tag.textContent = t;
+            id.appendChild(document.createTextNode(" "));
+            id.appendChild(tag);
+          });
+
+          const volt = document.createElement("div");
+          volt.className = "v";
+          volt.textContent = v.toFixed(3) + " V";
+
+          card.appendChild(id);
+          card.appendChild(volt);
+          root.appendChild(card);
+        });
+
+        const vmax = cells[maxIdx];
+        const vmin = cells[minIdx];
+        els.dv.textContent = Math.round((vmax - vmin) * 1000) + " mV";
+      }
+
+      function pickScenario() {
+        scenarioTicks -= 1;
+        if (scenarioTicks > 0) return;
+        const roll = Math.random();
+        if (roll < 0.12) {
+          scenario = "low_soc";
+          scenarioTicks = 8;
+        } else if (roll < 0.22) {
+          scenario = "cell_high";
+          scenarioTicks = 6;
+        } else if (roll < 0.28) {
+          scenario = "hot";
+          scenarioTicks = 5;
+        } else {
+          scenario = "normal";
+          scenarioTicks = 10 + Math.floor(Math.random() * 8);
+        }
+      }
+
+      function tick() {
+        pickScenario();
+
+        if (scenario === "low_soc") {
+          soc = Math.max(8, soc - 1.2 - Math.random());
+        } else if (scenario === "normal") {
+          soc = Math.min(92, Math.max(22, soc + (Math.random() - 0.42) * 0.55));
+        } else {
+          soc = Math.min(90, Math.max(25, soc + (Math.random() - 0.5) * 0.4));
+        }
+
+        if (scenario === "hot") {
+          tempC = Math.min(58, tempC + 1.5 + Math.random());
+        } else {
+          tempC = Math.max(22, Math.min(42, tempC + (Math.random() - 0.55) * 0.8));
+        }
+
+        const pv = 1600 + Math.random() * 1200;
+        const load = 600 + Math.random() * 1400;
+        const desiredBat = Math.max(-2800, Math.min(2800, (pv - load) * (0.75 + Math.random() * 0.2)));
+        const bat = desiredBat;
+        const grid = pv - load - bat;
+
+        banks.forEach((cells, bankIdx) => {
+          cells.forEach((_, i) => {
+            let next = cells[i] + (Math.random() - 0.5) * 0.0025;
+            if (scenario === "cell_high" && bankIdx === activeBank && i === 4) {
+              next = Math.min(V_CRIT_HIGH + 0.02, Math.max(V_WARN_HIGH + 0.01, next + 0.012));
+            } else {
+              next = Math.min(3.42, Math.max(3.22, next));
+            }
+            cells[i] = next;
+          });
+        });
+
+        const cells = banks[activeBank];
+        const residual = pv - load - bat - grid;
+
+        els.pv.textContent = fmtPower(pv).replace(/^[+−]/, "");
+        els.load.textContent = fmtPower(load).replace(/^[+−]/, "");
+        els.bat.textContent = fmtPower(bat);
+        els.grid.textContent = fmtPower(grid);
+        els.balanceNote.textContent =
+          "Balance: PV − Consumo − Batería − Red = " + residual.toFixed(1) + " W (debe ≈ 0)";
+        els.temp.textContent = tempC.toFixed(1) + " °C";
+
+        renderSoc(soc);
+        renderCells(cells);
+        renderStatus(evaluateStatus(cells, soc, tempC));
+      }
+
+      function selectBank(index) {
+        activeBank = index;
+        els.tab0.setAttribute("aria-selected", index === 0 ? "true" : "false");
+        els.tab1.setAttribute("aria-selected", index === 1 ? "true" : "false");
+        els.cells.setAttribute("aria-labelledby", index === 0 ? "tab0" : "tab1");
+        renderCells(banks[activeBank]);
+        renderStatus(evaluateStatus(banks[activeBank], soc, tempC));
+      }
+
+      els.tab0.addEventListener("click", function () { selectBank(0); });
+      els.tab1.addEventListener("click", function () { selectBank(1); });
+
       renderSoc(soc);
-      renderCells();
-    }
+      renderCells(banks[0]);
+      renderStatus(evaluateStatus(banks[0], soc, tempC));
 
-    renderSoc(soc);
-    renderCells();
-    setInterval(tick, 2000);
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const interval = reduceMotion ? 4000 : TICK_MS;
+      setInterval(tick, interval);
+    })();
   </script>
 </body>
 </html>

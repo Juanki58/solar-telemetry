@@ -1,11 +1,12 @@
 [browser]
 gatherUsageStats = false
-serverAddress = "0.0.0.0"
+serverAddress = "127.0.0.1"
 serverPort = 8501
 
 [server]
 headless = true
-address = "0.0.0.0"
+# Por defecto solo localhost (app de escritorio). LAN: python launcher.py --host 0.0.0.0
+address = "127.0.0.1"
 port = 8501
 
 [theme]
