@@ -229,24 +229,24 @@ try {
     }
 
     $startBat = Join-Path $RepoRoot "scripts\windows\Start-BIntelligent.bat"
-    if (-not $NoShortcut) {
-        Write-Step "Creando accesos directos"
-        $wsh = New-Object -ComObject WScript.Shell
-        $desktop = [Environment]::GetFolderPath("Desktop")
-        $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-        if (-not (Test-Path $startMenu)) {
-            New-Item -ItemType Directory -Path $startMenu -Force | Out-Null
-        }
+    $iconPath = Join-Path $RepoRoot "assets\b-intelligent.ico"
+    if (-not (Test-Path $startBat)) {
+        throw "Falta el arranque: $startBat"
+    }
+    if (-not (Test-Path $iconPath)) {
+        Write-Warning "No se encontro icono en $iconPath (el acceso directo usara el icono por defecto)."
+    }
 
-        foreach ($targetDir in @($desktop, $startMenu)) {
-            $lnkPath = Join-Path $targetDir "B-Intelligent Monitor.lnk"
-            $shortcut = $wsh.CreateShortcut($lnkPath)
-            $shortcut.TargetPath = $startBat
-            $shortcut.WorkingDirectory = $RepoRoot
-            $shortcut.WindowStyle = 7
-            $shortcut.Description = "B-Intelligent - monitor BMS Victron / JK"
-            $shortcut.Save()
-            Write-Host "  $lnkPath"
+    if (-not $NoShortcut) {
+        Write-Step "Creando accesos directos (Escritorio + menu Inicio)"
+        $createShortcuts = Join-Path $PSScriptRoot "Create-Shortcuts.ps1"
+        $links = & $createShortcuts
+        foreach ($lnk in $links) {
+            Write-Host "  $lnk"
+        }
+        Write-Host "  Target: $startBat"
+        if (Test-Path $iconPath) {
+            Write-Host "  Icon:   $iconPath"
         }
     }
 
@@ -255,6 +255,7 @@ try {
     Write-Host "Arranque: doble clic en 'B-Intelligent Monitor' o ejecuta:"
     Write-Host "  $startBat"
     Write-Host "Monitor: http://127.0.0.1:8501"
+    Write-Host "LAN (movil): Start-BIntelligent-LAN.bat  o  launcher.py --host 0.0.0.0"
     exit 0
 } catch {
     Write-Fail $_.Exception.Message

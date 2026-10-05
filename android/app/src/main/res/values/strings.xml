@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">B-Intelligent Monitor</string>
+    <string name="settings_title">Configurar servidor</string>
+    <string name="settings_help">Introduce la URL del monitor Streamlit en tu PC (misma Wi‑Fi).\nEjemplo: http://192.168.1.40:8501\n\nEn el PC usa Start-BIntelligent-LAN.bat o:\nlauncher.py --host 0.0.0.0</string>
+    <string name="server_url_hint">URL del servidor</string>
+    <string name="save">Guardar</string>
+    <string name="retry">Reintentar</string>
+    <string name="refresh">Actualizar</string>
+    <string name="use_demo">Abrir demo pública</string>
+    <string name="use_lan_hint">Plantilla LAN (:8501)</string>
+    <string name="url_saved">URL guardada</string>
+    <string name="first_run_title">Conectar al monitor</string>
+    <string name="first_run_message">Pon la IP LAN de tu PC con el puerto 8501. El monitor debe estar en marcha con --host 0.0.0.0.</string>
+    <string name="error_load">No se pudo cargar:\n%1$s\n\n%2$s\n\nComprueba que el PC y el móvil están en la misma Wi‑Fi, que el monitor escucha en 0.0.0.0:8501 y que el firewall permite el puerto 8501.</string>
+</resources>

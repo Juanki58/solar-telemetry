@@ -6,3 +6,13 @@ venv/
 .env
 *.log
 .streamlit/secrets.toml
+
+# Android
+android/.gradle/
+android/local.properties
+android/**/build/
+android/**/.cxx/
+android/*.iml
+android/.idea/
+*.apk
+*.aab

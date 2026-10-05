@@ -5,6 +5,7 @@ cd /d "%~dp0..\.."
 
 set "VENV_PY=.venv\Scripts\python.exe"
 set "INSTALL_BAT=%~dp0Install-BIntelligent.bat"
+set "CREATE_SHORTCUTS=%~dp0Create-Shortcuts.ps1"
 set "URL=http://127.0.0.1:8501"
 
 if not exist "%VENV_PY%" (
@@ -46,12 +47,23 @@ if errorlevel 1 (
   )
 )
 
+REM Recrear acceso directo si falta (Escritorio clasico o OneDrive Desktop)
+set "HAS_LNK=0"
+if exist "%USERPROFILE%\Desktop\B-Intelligent Monitor.lnk" set "HAS_LNK=1"
+if defined OneDrive if exist "%OneDrive%\Desktop\B-Intelligent Monitor.lnk" set "HAS_LNK=1"
+if "%HAS_LNK%"=="0" (
+  if exist "%CREATE_SHORTCUTS%" (
+    echo [B-Intelligent] Creando acceso directo en Escritorio / menu Inicio...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%CREATE_SHORTCUTS%" >nul 2>&1
+  )
+)
+
 echo.
 echo [B-Intelligent] Arrancando monitor en %URL%
 echo Cierra esta ventana para detener el servidor.
 echo.
 
-"%VENV_PY%" launcher.py
+"%VENV_PY%" launcher.py %*
 set EXITCODE=%ERRORLEVEL%
 if not %EXITCODE%==0 (
   echo.
