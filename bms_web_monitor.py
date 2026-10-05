@@ -93,7 +93,8 @@ WEB_DEFAULTS = {
     "battery_capacity_kwh_per_unit": 10.0,
     "battery_bank_mode": "parallel",
     "soc_source": "victron",
-    "battery_source": "jk_tcp",
+    # Preferido en plantas GX/CAN (JK sin TCP). Usar jk_tcp solo con Modbus :6481.
+    "battery_source": "victron",
     "battery_pack_name": "Batería (Victron GX / CAN)",
     "soc_alert_warning": 20.0,
     "soc_alert_critical": 10.0,
@@ -209,17 +210,29 @@ def classify_data_state(mode: str, telemetry: dict, cfg: dict | None = None) -> 
         return "simulated"
     if source == "modbus_error":
         return "connection_error"
-    # JK en CAN vía Color Control: no hay TCP JK; Victron Modbus basta para "live".
-    if uses_victron_battery(cfg or telemetry) or telemetry.get("battery_source") in (
-        "victron",
-        "gx_can",
-    ):
+
+    # Solo tratar como Victron/CAN si la fuente está explícita (cfg o telemetry).
+    # No usar el default global de resolve_battery_source aquí: un telemetry
+    # sin battery_source + bancos jk_fallback debe ser mixed_fallback, no live.
+    bat_src = None
+    if cfg and cfg.get("battery_source"):
+        bat_src = resolve_battery_source(cfg)
+    elif telemetry.get("battery_source"):
+        bat_src = resolve_battery_source(telemetry)
+
+    if bat_src in ("victron", "gx_can"):
         if source == "modbus":
             return "live"
         return "connection_error"
+
     batteries = telemetry.get("batteries") or []
     if batteries:
         real_jk = sum(1 for b in batteries if b.get("data_source") == "jk_modbus")
+        only_victron_pack = batteries and all(
+            b.get("data_source") == "victron_gx" for b in batteries
+        )
+        if only_victron_pack and source == "modbus":
+            return "live"
         if real_jk == 0:
             return "mixed_fallback"
     if source == "modbus":
@@ -448,8 +461,12 @@ def render_battery_cells_panel(batteries: list[dict], cfg: dict):
         if battery.get("error"):
             st.warning(f"JK BMS: {battery['error']}")
 
-        if not voltajes:
-            st.info("Sin datos de celdas para este banco.")
+        # Fallback/unconfigured: vacío honesto — nunca grid sintético fingiendo mediciones.
+        if data_src in ("jk_fallback", "jk_unconfigured") or not voltajes:
+            st.info(
+                "**Celdas no disponibles** — sin lectura JK Modbus TCP real. "
+                "No se muestran voltajes estimados ni simulados como si fueran mediciones."
+            )
             continue
 
         v_max = max(voltajes)
@@ -564,9 +581,13 @@ def render_cell_health_sidebar(telemetry: dict, cfg: dict):
         return
 
     if batteries:
+        shown = 0
         for bank in batteries:
             voltajes = bank.get("cells") or bank.get("cell_voltages") or []
-            if not voltajes:
+            data_src = bank.get("data_source", "")
+            bank_name = bank.get("name", bank.get("id", "Banco"))
+            if data_src in ("jk_fallback", "jk_unconfigured") or not voltajes:
+                st.caption(f"🔴 {bank_name} · celdas no disponibles")
                 continue
             salud = analizar_salud_celdas(voltajes)
             health_class = {
@@ -575,10 +596,9 @@ def render_cell_health_sidebar(telemetry: dict, cfg: dict):
                 "warning": "health-warning",
                 "error": "health-error",
             }.get(salud["tipo_alerta"], "health-info")
-            bank_name = bank.get("name", bank.get("id", "Banco"))
-            if bank.get("data_source") == "jk_modbus" and bank.get("jk_online") and not bank.get("error"):
+            if data_src == "jk_modbus" and bank.get("jk_online") and not bank.get("error"):
                 online = "🟢"
-            elif bank.get("data_source") == "simulated":
+            elif data_src == "simulated":
                 online = "🧪"
             else:
                 online = "🔴"
@@ -590,34 +610,47 @@ def render_cell_health_sidebar(telemetry: dict, cfg: dict):
             c1, c2 = st.columns(2)
             c1.metric("σ", f"{salud['desviacion_estandar_mv']} mV")
             c2.metric("Drift", f"{salud['drift_mv']} mV")
+            shown += 1
+        if shown == 0:
+            st.markdown(
+                '<div class="health-badge health-info">Celdas no disponibles</div>',
+                unsafe_allow_html=True,
+            )
         st.caption(f"Fuente agregada: {source}")
     else:
         voltajes = telemetry.get("cell_voltages") or []
-        salud = analizar_salud_celdas(voltajes)
-        health_class = {
-            "success": "health-success",
-            "info": "health-info",
-            "warning": "health-warning",
-            "error": "health-error",
-        }.get(salud["tipo_alerta"], "health-info")
-        st.caption(f"Fuente: {source} · {len(voltajes)} celdas · media {salud['media_v']:.3f} V")
-        st.markdown(
-            f'<div class="health-badge {health_class}">Estado: {salud["estado"]}</div>',
-            unsafe_allow_html=True,
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(
-                label="Desviación Est.",
-                value=f"{salud['desviacion_estandar_mv']} mV",
-                help="Dispersión media entre celdas. Lo ideal es mantenerla por debajo de 15 mV en operación.",
+        if not voltajes:
+            st.caption(f"Fuente: {source}")
+            st.markdown(
+                '<div class="health-badge health-info">Celdas no disponibles</div>',
+                unsafe_allow_html=True,
             )
-        with col2:
-            st.metric(
-                label="Dispersión (Drift)",
-                value=f"{salud['drift_mv']} mV",
-                help="Diferencia entre la celda con voltaje más alto y la más baja (Vmax − Vmin).",
+        else:
+            salud = analizar_salud_celdas(voltajes)
+            health_class = {
+                "success": "health-success",
+                "info": "health-info",
+                "warning": "health-warning",
+                "error": "health-error",
+            }.get(salud["tipo_alerta"], "health-info")
+            st.caption(f"Fuente: {source} · {len(voltajes)} celdas · media {salud['media_v']:.3f} V")
+            st.markdown(
+                f'<div class="health-badge {health_class}">Estado: {salud["estado"]}</div>',
+                unsafe_allow_html=True,
             )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(
+                    label="Desviación Est.",
+                    value=f"{salud['desviacion_estandar_mv']} mV",
+                    help="Dispersión media entre celdas. Lo ideal es mantenerla por debajo de 15 mV en operación.",
+                )
+            with col2:
+                st.metric(
+                    label="Dispersión (Drift)",
+                    value=f"{salud['drift_mv']} mV",
+                    help="Diferencia entre la celda con voltaje más alto y la más baja (Vmax − Vmin).",
+                )
 
     with st.expander("ℹ️ ¿Por qué importa la Desviación Estándar?"):
         st.write(
@@ -915,23 +948,16 @@ def read_victron_modbus_telemetry(cfg: dict) -> dict:
             soc, cfg.get("battery_capacity_kwh", 10.0), house_consumption_w
         )
 
-        # Honestidad: no inventar celdas desde el pack. En jk_tcp las rellena JK;
-        # en victron/gx_can se muestran solo métricas de pack.
+        # Honestidad: nunca inventar celdas desde el voltaje de pack.
+        # En jk_tcp solo merge_battery_telemetry rellena celdas si hay JK real;
+        # en victron/gx_can solo métricas de pack.
+        cell_voltages: list[float] = []
+        v_high = None
+        v_low = None
         if uses_victron_battery(cfg):
-            cell_voltages: list[float] = []
             cell_source = "Celdas no disponibles — JK en CAN Victron"
-            v_high = None
-            v_low = None
         else:
-            # Estimación suave solo como placeholder hasta que JK responda;
-            # merge_battery_telemetry la sustituye si hay lectura JK real/fallback.
-            cell_count = cfg["cell_count"]
-            spread = cfg["cell_spread_v"]
-            v_avg = pack_voltage / cell_count
-            v_high = round(v_avg + spread / 2, 3)
-            v_low = round(v_avg - spread / 2, 3)
-            cell_voltages = build_estimated_cell_voltages(v_low, v_high, cell_count)
-            cell_source = "Estimado desde pack Victron (pendiente JK TCP)"
+            cell_source = "Celdas pendientes de JK TCP (no estimadas desde pack)"
 
         return {
             "highest_cell_voltage": v_high,
@@ -1536,7 +1562,8 @@ def render_data_honesty_banners(mode: str, telemetry: dict, cfg: dict):
         st.markdown(
             '<div class="alert-bar" style="background:#3d2a00;border:2px solid #ff9f1c;'
             'font-size:1.0rem;padding:0.85rem 1rem;">'
-            "⚠ <b>Victron OK, JK sin lectura real</b> — celdas/temps pueden ser fallback simulado. "
+            "⚠ <b>Victron OK, JK sin lectura real</b> — "
+            "<b>celdas no disponibles</b> (no se inventan voltajes). "
             "Si el JK va por CAN al Color Control, usa "
             '<code>battery_source: "victron"</code> (no TCP 6481).</div>',
             unsafe_allow_html=True,

@@ -168,8 +168,10 @@ El dashboard muestra un **banner muy visible** cuando los datos son simulados o 
 
 | Clave | Default | Significado |
 |-------|---------|-------------|
-| `battery_source` | `jk_tcp` | Origen de datos de batería: `jk_tcp` (Modbus TCP del JK) o `victron` / `gx_can` (pack vía GX) |
-| `safety_write_enabled` | `false` | Si `true`, el supervisor puede escribir registros Victron (experimental) |
+| `battery_source` | `victron` | Origen de batería: `victron` / `gx_can` (pack vía GX, típico JK+CAN) o `jk_tcp` (Modbus TCP del JK con C1…C16) |
+| `safety_write_enabled` | `false` | Si `true`, el supervisor *puede* escribir en Victron (experimental; dry-run por defecto) |
+| `safety_require_jk_online` | `true` | Exige JK online para supervisión; **no** relaja escrituras sobre sim/fallback |
+| `safety_write_registers_confirmed` | `false` | Tras auditar el mapa: permite regs 2704/2705/2706. Sin esto, esas escrituras se **rechazan** |
 | `web_auth_password` | `""` | Password del monitor Streamlit (obligatorio en LAN) |
 | `web_auth_required_on_lan` | `true` | Bloquea UI si bind `0.0.0.0` sin password |
 
@@ -177,10 +179,11 @@ El dashboard muestra un **banner muy visible** cuando los datos son simulados o 
 
 Si los JK **no** tienen IP propia en LAN y van por **cable CAN** al Color Control GX:
 
-- Pon `"battery_source": "victron"` (alias: `"gx_can"`).
+- Pon `"battery_source": "victron"` (alias: `"gx_can"`) — es el **default** de `config.example.json`.
 - **No** uses `jk_host` / TCP `6481`: esos timeouts son esperados (no hay servicio Modbus en `.34`/`.35`).
 - El monitor lee del GX (p. ej. `192.168.1.37`) SoC, voltaje de pack, corriente, potencia y temp si el unit de batería está configurado.
-- **Celdas individuales (C1…C16) no están disponibles** por Modbus estándar del servicio de batería agregado. La UI lo indica con honestidad (`jk_online` permanece `false`).
+- **Celdas individuales (C1…C16) no están disponibles** por Modbus estándar del servicio de batería agregado. La UI muestra vacío / «celdas no disponibles» (`jk_online` permanece `false`).
+- Si `jk_tcp` falla o está en cooldown, **no** se inventan celdas sinusoidales ni desde el voltaje de pack.
 - Para celdas celda-a-celda hace falta un JK con Modbus TCP en red (`battery_source: "jk_tcp"`).
 
 Preferible guardar la password en `.streamlit/secrets.toml` (no en git).
@@ -192,7 +195,8 @@ Preferible guardar la password en `.streamlit/secrets.toml` (no en git).
 ```
 
 - Por defecto: **DRY-RUN** (solo log). Habilitar escrituras: `"safety_write_enabled": true` **bajo tu responsabilidad**.
-- **Nunca escribe** si la telemetría es simulada, fallback o JK offline.
+- **Nunca escribe** si la telemetría es simulada, fallback, unknown o JK offline. `safety_require_jk_online=false` **no** abre ese agujero.
+- Registros **2704 / 2705 / 2706** están **bloqueados** hasta `"safety_write_registers_confirmed": true` (mapa Victron auditado para la planta). Sin confirmación, el supervisor **rehúsa** con log claro.
 - **No sustituye** un BMS hardware certificado. Ver [`docs/SAFETY_DISCLAIMER.md`](docs/SAFETY_DISCLAIMER.md).
 
 ## Camino comercial (alcance actual)

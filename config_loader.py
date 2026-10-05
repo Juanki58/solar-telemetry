@@ -27,7 +27,8 @@ CORE_DEFAULTS: dict[str, Any] = {
     "t_charge_low": 0.0,
     "jk_port": 6481,
     "cell_count": 16,
-    "battery_source": "jk_tcp",
+    # Preferido en plantas GX/CAN. Usar jk_tcp solo con BMS Modbus TCP en LAN.
+    "battery_source": "victron",
     "batteries": [],
 }
 
@@ -59,13 +60,16 @@ def normalize_config(cfg: dict[str, Any], *, loaded_keys: set[str] | None = None
     if "whatsapp_alert_cooldown_s" not in loaded_keys and cfg.get("telegram_alert_cooldown_s") is not None:
         cfg["whatsapp_alert_cooldown_s"] = cfg["telegram_alert_cooldown_s"]
 
-    raw_src = str(cfg.get("battery_source") or "jk_tcp").strip().lower()
+    raw_src = str(cfg.get("battery_source") or "victron").strip().lower()
     if raw_src in ("gx", "can", "victron_can", "gx_can"):
         cfg["battery_source"] = "gx_can"
     elif raw_src in ("victron", "gx_modbus", "system"):
         cfg["battery_source"] = "victron"
-    else:
+    elif raw_src in ("jk_tcp", "jk", "jk_bms", "modbus_jk"):
         cfg["battery_source"] = "jk_tcp"
+    else:
+        # Desconocido → victron (pack honesto) en vez de forzar jk_tcp con celdas fake.
+        cfg["battery_source"] = "victron"
 
     # En modo Victron/CAN no tiene sentido insistir en hosts JK TCP muertos.
     if cfg["battery_source"] in ("victron", "gx_can"):

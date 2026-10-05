@@ -7,6 +7,10 @@ IMPORTANTE
   salvo que `safety_write_enabled` sea true en config.json.
 - NUNCA actúa sobre telemetría simulada ni fallback: exige lecturas reales
   de JK (y, si se usa, Victron). Si la fuente no es fiable, se niega la escritura.
+- `safety_require_jk_online=false` NO relaja las puertas de fuente de verdad:
+  sim/fallback/unknown nunca obtienen write_allowed.
+- Registros 2704/2705/2706 están bloqueados hasta auditar el mapa Victron de
+  la planta; hace falta además `safety_write_registers_confirmed: true`.
 - Esto NO es un BMS certificado. Los cortes activos son experimentales y
   no sustituyen protecciones hardware ni un BMS homologado.
   Ver docs/SAFETY_DISCLAIMER.md.
@@ -34,8 +38,15 @@ logger = logging.getLogger("bintelligent.safety")
 SAFETY_DEFAULTS: dict[str, Any] = {
     "safety_write_enabled": False,
     "safety_require_jk_online": True,
+    # Mapa de registros Victron (2704/05/06) no auditado por planta → bloqueado.
+    "safety_write_registers_confirmed": False,
     "safety_loop_interval_s": 5,
 }
+
+# Hasta validar el Unit ID / mapa ESS de esta planta, estas escrituras son riesgo.
+UNVALIDATED_VICTRON_WRITE_REGS = frozenset({2704, 2705, 2706})
+REAL_LIVE_SOURCES = frozenset({"jk_modbus"})
+UNRELIABLE_BANK_SOURCES = frozenset({"simulated", "jk_fallback", "jk_unconfigured"})
 
 
 class VictronBmsSafetySupervisor:
@@ -52,6 +63,9 @@ class VictronBmsSafetySupervisor:
             write_flag = False
         self.write_enabled = write_flag
         self.dry_run = not self.write_enabled
+        self.registers_confirmed = bool(
+            self.config.get("safety_write_registers_confirmed", False)
+        )
 
         self.victron_client = ModbusClient(
             host=self.config["victron_host"],
@@ -69,6 +83,11 @@ class VictronBmsSafetySupervisor:
             "AVISO: cortes activos NO son un BMS certificado. "
             "Uso experimental / planta propia. Ver docs/SAFETY_DISCLAIMER.md"
         )
+        if not self.registers_confirmed:
+            logger.warning(
+                "Registros 2704/2705/2706 BLOQUEADOS (mapa Victron no confirmado). "
+                'Para desbloquear tras auditoría: "safety_write_registers_confirmed": true'
+            )
         if self.dry_run:
             logger.info(
                 "Escrituras Modbus deshabilitadas. "
@@ -82,6 +101,9 @@ class VictronBmsSafetySupervisor:
 
         Si no hay datos JK fiables, marca source=unreliable y no permite writes.
         En modo Victron/CAN no hay celdas: los cortes por celda quedan denegados.
+
+        Importante: `safety_require_jk_online=false` NO autoriza write_allowed
+        sobre simulación, fallback o fuentes desconocidas.
         """
         if uses_victron_battery(self.config):
             merged = {
@@ -116,14 +138,19 @@ class VictronBmsSafetySupervisor:
         real_banks = [
             b
             for b in batteries
-            if b.get("data_source") == "jk_modbus" and b.get("jk_online") and not b.get("error")
+            if b.get("data_source") == "jk_modbus"
+            and b.get("jk_online")
+            and not b.get("error")
+            and (b.get("cell_voltages") or b.get("cells"))
         ]
         sim_or_fallback = [
             b
             for b in batteries
-            if b.get("data_source") in ("simulated", "jk_fallback", "jk_unconfigured")
+            if b.get("data_source") in UNRELIABLE_BANK_SOURCES
+            or b.get("data_source") not in REAL_LIVE_SOURCES
             or not b.get("jk_online")
             or b.get("error")
+            or not (b.get("cell_voltages") or b.get("cells"))
         ]
 
         if not batteries:
@@ -132,23 +159,32 @@ class VictronBmsSafetySupervisor:
             merged["write_allowed"] = False
             return merged
 
-        if self.config.get("safety_require_jk_online", True) and not real_banks:
+        # Puerta dura de fuente de verdad: nunca write_allowed sin JK real live.
+        # safety_require_jk_online=false NO puede relajar esto.
+        if not real_banks:
             merged["source"] = "unreliable"
             merged["error"] = (
                 "Ningún JK online con lectura real "
-                f"(sim/fallback: {len(sim_or_fallback)})"
+                f"(sim/fallback/unknown: {len(sim_or_fallback)}). "
+                "safety_require_jk_online no autoriza escrituras sobre datos no reales."
             )
             merged["write_allowed"] = False
             return merged
 
-        if sim_or_fallback and self.config.get("safety_require_jk_online", True):
-            # Si alguno falla, no escribimos: telemetría parcial no es suficiente.
+        if sim_or_fallback:
+            # Telemetría parcial / mezcla no es suficiente para writes.
             names = ", ".join(b.get("name", "?") for b in sim_or_fallback)
             merged["source"] = "unreliable"
-            merged["error"] = f"Bancos sin lectura real JK: {names}"
+            merged["error"] = (
+                f"Bancos sin lectura real JK (write bloqueado): {names}. "
+                "Fuente de verdad incompleta — no se relaja con safety_require_jk_online=false."
+            )
             merged["write_allowed"] = False
             return merged
 
+        # require_jk_online=true (default): ya cubierto arriba.
+        # require_jk_online=false: solo permitiría writes si TODOS los bancos son
+        # jk_modbus live (mismo camino). Nunca sim/fallback.
         merged["source"] = "jk_modbus"
         merged["error"] = None
         merged["write_allowed"] = True
@@ -159,10 +195,24 @@ class VictronBmsSafetySupervisor:
         logger.error("ESCRITURA DENEGADA: %s", reason)
         return False
 
+    def _register_write_allowed(self, register: int) -> bool:
+        """Bloquea 2704/05/06 hasta confirmar mapa Victron de la planta."""
+        if int(register) not in UNVALIDATED_VICTRON_WRITE_REGS:
+            return True
+        if self.registers_confirmed:
+            return True
+        self._refuse_write(
+            f"registro Victron {register} bloqueado: mapa no auditado para esta planta. "
+            "Riesgo de escribir consignas ESS/inversor incorrectas. "
+            'Tras validar Unit ID + mapa: "safety_write_registers_confirmed": true '
+            "(sigue haciendo falta safety_write_enabled=true). Ver docs/SAFETY_DISCLAIMER.md"
+        )
+        return False
+
     def aplicar_contramedida_victron(self, register, value, descripcion, *, telemetry: dict | None = None):
         """
-        Escribe en Victron solo si write_enabled y telemetría real fiable.
-        En dry-run solo registra la acción que se habría tomado.
+        Escribe en Victron solo si write_enabled, telemetría real fiable y
+        registros confirmados (2704/05/06). En dry-run solo registra la acción.
         """
         telemetry = telemetry or {}
 
@@ -174,10 +224,19 @@ class VictronBmsSafetySupervisor:
                 "Nunca se escribe sobre datos simulados/fallback."
             )
 
-        if telemetry.get("write_allowed") is False:
+        if telemetry.get("source") not in REAL_LIVE_SOURCES:
             return self._refuse_write(
-                telemetry.get("error") or "write_allowed=False"
+                f"source={telemetry.get('source')!r} no es camino live verificado "
+                f"(requerido: {sorted(REAL_LIVE_SOURCES)})"
             )
+
+        if telemetry.get("write_allowed") is not True:
+            return self._refuse_write(
+                telemetry.get("error") or "write_allowed no es True"
+            )
+
+        if not self._register_write_allowed(register):
+            return False
 
         if self.dry_run or not self.write_enabled:
             logger.warning(
@@ -210,12 +269,12 @@ class VictronBmsSafetySupervisor:
         telemetria = self.read_bms_telemetry()
         cfg = self.config
 
-        if telemetria.get("source") != "jk_modbus" or not telemetria.get("write_allowed", False):
+        if telemetria.get("source") != "jk_modbus" or telemetria.get("write_allowed") is not True:
             logger.warning(
                 "Sin telemetría JK real — no se evaluarán escrituras. %s",
                 telemetria.get("error") or telemetria.get("source"),
             )
-            # Aun así logueamos números si existen (pueden ser fallback) marcados como no-acción.
+            # Aun así logueamos números si existen (pueden ser vacíos) marcados como no-acción.
             if telemetria.get("highest_cell_voltage") is not None:
                 logger.info(
                     "Monitor (NO ESCRIBIR) -> Celda Máx: %sV | Celda Mín: %sV | Temp Máx: %s°C | source=%s",
@@ -240,32 +299,33 @@ class VictronBmsSafetySupervisor:
         )
 
         # --- ALGORITMO DE CONTROL DE SEGURIDAD (experimental) ---
+        # Escrituras a 2704/05/06 siguen pasando por _register_write_allowed.
 
-        if t_max >= cfg["t_critical_high"]:
+        if t_max is not None and t_max >= cfg["t_critical_high"]:
             self.aplicar_contramedida_victron(
                 2706, 4, "APAGADO DE EMERGENCIA POR SOBRETEMPERATURA", telemetry=telemetria
             )
             return telemetria
 
-        if t_min <= cfg["t_charge_low"]:
+        if t_min is not None and t_min <= cfg["t_charge_low"]:
             self.aplicar_contramedida_victron(
                 2704, 0, "CORRIENTE DE CARGA A 0A POR TEMPERATURA BAJO CERO", telemetry=telemetria
             )
             return telemetria
 
-        if v_max >= cfg["v_cell_critical_high"]:
+        if v_max is not None and v_max >= cfg["v_cell_critical_high"]:
             self.aplicar_contramedida_victron(
                 2704, 0, "CORRIENTE DE CARGA A 0A POR VOLTAJE CRÍTICO DE CELDA", telemetry=telemetria
             )
             return telemetria
 
-        if v_max >= cfg["v_cell_warning_high"]:
+        if v_max is not None and v_max >= cfg["v_cell_warning_high"]:
             self.aplicar_contramedida_victron(
                 2704, 10, "REDUCCIÓN DE CARGA PREVENTIVA (CELDA ALTA)", telemetry=telemetria
             )
             return telemetria
 
-        if v_min <= cfg["v_cell_critical_low"]:
+        if v_min is not None and v_min <= cfg["v_cell_critical_low"]:
             self.aplicar_contramedida_victron(
                 2705, 0, "CORRIENTE DE DESCARGA A 0A POR SOBREDESCARGA DE CELDA", telemetry=telemetria
             )
