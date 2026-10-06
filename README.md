@@ -147,14 +147,16 @@ El dashboard muestra un **banner muy visible** cuando los datos son simulados o 
 | Archivo | Uso |
 |---------|-----|
 | `launcher.py` | Arranque tipo app (Streamlit + navegador); fail-closed en LAN sin auth |
-| `bms_web_monitor.py` | Dashboard Streamlit (SoC, celdas JK, salud LiFePO4) |
+| `bms_web_monitor.py` | Dashboard Streamlit (SoC, celdas JK, salud LiFePO4, panel Acciones) |
 | `bms_gui_monitor.py` | Panel escritorio tkinter (alternativa ligera) |
+| `victron_gx_actions.py` | Acciones opcionales GX (ESS/relé) — lectura + dry-run |
 | `victron_industrial_bms_safety.py` | Protección activa Modbus Victron (**dry-run por defecto**) |
 | `jk_bms_client.py` | Cliente JK BMS v19 |
 | `config_loader.py` | Carga `config.json` |
 | `integrations/whatsapp_alerts.py` | Alertas opcionales WhatsApp Cloud API |
 | `docs/index.html` | Demo estática (simulada) + PWA manifest |
 | `docs/SAFETY_DISCLAIMER.md` | Aviso de seguridad / no-BMS-certificado |
+| `docs/VICTRON_MODBUS_PROBE.md` | Mapa Modbus auditado en planta (regs ESS/relé/batería) |
 | `scripts/smoke_test.py` | Smoke test de imports + dry-run safety |
 | `scripts/windows/*` | Instalación, arranque y accesos directos Windows |
 | `android/` | App WebView Kotlin/Gradle (cliente LAN) |
@@ -170,6 +172,7 @@ El dashboard muestra un **banner muy visible** cuando los datos son simulados o 
 |-------|---------|-------------|
 | `battery_source` | `victron` | Origen de batería: `victron` / `gx_can` (pack vía GX, típico JK+CAN) o `jk_tcp` (Modbus TCP del JK con C1…C16) |
 | `safety_write_enabled` | `false` | Si `true`, el supervisor *puede* escribir en Victron (experimental; dry-run por defecto) |
+| `manual_write_enabled` | `false` | Si `true`, el panel **Acciones** puede escribir regs auditados (2700/2902/806) tras confirmación. Independiente del loop BMS |
 | `safety_require_jk_online` | `true` | Exige JK online para supervisión; **no** relaja escrituras sobre sim/fallback |
 | `safety_write_registers_confirmed` | `false` | Tras auditar el mapa: permite regs 2704/2705/2706. Sin esto, esas escrituras se **rechazan** |
 | `web_auth_password` | `""` | Password del monitor Streamlit (obligatorio en LAN) |
@@ -185,6 +188,19 @@ Si los JK **no** tienen IP propia en LAN y van por **cable CAN** al Color Contro
 - **Celdas individuales (C1…C16) no están disponibles** por Modbus estándar del servicio de batería agregado. La UI muestra vacío / «celdas no disponibles» (`jk_online` permanece `false`).
 - Si `jk_tcp` falla o está en cooldown, **no** se inventan celdas sinusoidales ni desde el voltaje de pack.
 - Para celdas celda-a-celda hace falta un JK con Modbus TCP en red (`battery_source: "jk_tcp"`).
+- Mapa Modbus auditado (ESS, relés, unit batería): [`docs/VICTRON_MODBUS_PROBE.md`](docs/VICTRON_MODBUS_PROBE.md).
+
+### Panel Acciones (ESS / relé)
+
+En el dashboard Streamlit, expander **Acciones GX**:
+
+1. **Leer estado ESS** — Hub4Mode (2902), consigna de red (2700), BatteryLife, relés 806/807.
+2. **Consigna de red** — preview/escritura de reg 2700 (confirmación obligatoria).
+3. **Modo ESS** — preview/escritura de Hub4Mode 2902.
+4. **Relé GX 0** — preview/escritura de reg 806.
+
+Por defecto todo es **dry-run**. Escritura real: `"manual_write_enabled": true` **y** casilla de confirmación.  
+Esto es independiente de `safety_write_enabled` (supervisor automático) y **no** reabre 2704/2705/2706.
 
 Preferible guardar la password en `.streamlit/secrets.toml` (no en git).
 

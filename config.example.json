@@ -42,7 +42,7 @@
   "plant_name": "B-Intelligent Plant",
   "inverter_unit_id": 225,
   "battery_unit_id": null,
-  "modbus_reg_battery_temperature": 282,
+  "modbus_reg_battery_temperature": 262,
   "modbus_reg_battery_temperature_scale": 10,
   "jk_host_1": "192.168.1.34",
   "jk_host_2": "192.168.1.35",
@@ -51,6 +51,7 @@
   "safety_require_jk_online": true,
   "safety_write_registers_confirmed": false,
   "safety_loop_interval_s": 5,
+  "manual_write_enabled": false,
   "web_auth_password": "",
   "web_auth_required_on_lan": true,
   "batteries": [

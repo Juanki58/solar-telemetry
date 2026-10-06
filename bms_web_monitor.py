@@ -26,6 +26,14 @@ from jk_bms_client import (
     resolve_battery_source,
     uses_victron_battery,
 )
+from victron_gx_actions import (
+    HUB4_MODE_LABELS,
+    action_set_grid_setpoint,
+    action_set_hub4_mode,
+    action_set_relay,
+    manual_writes_enabled,
+    read_ess_insights,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,13 +114,16 @@ WEB_DEFAULTS = {
     "plant_name": "B-Intelligent Plant",
     "inverter_unit_id": 225,
     "battery_unit_id": None,
-    "modbus_reg_battery_temperature": 282,
+    # Victron battery /Dc/0/Temperature (attributes.csv). No usar 282 (historial).
+    "modbus_reg_battery_temperature": 262,
     "modbus_reg_battery_temperature_scale": 10,
     "modbus_reg_system_current": 841,
     "modbus_reg_system_current_scale": 10,
     "batteries": [],
     # Seguridad / auth
     "safety_write_enabled": False,
+    # Escrituras puntuales desde panel Acciones (nunca el loop BMS).
+    "manual_write_enabled": False,
     "web_auth_password": "",
     "web_auth_required_on_lan": True,
 }
@@ -1598,6 +1609,174 @@ def render_data_honesty_banners(mode: str, telemetry: dict, cfg: dict):
         )
 
 
+def render_acciones_panel(cfg: dict, mode: str):
+    """
+    Panel opcional de acciones GX: lectura ESS + escrituras con confirmación / dry-run.
+    No reactiva el bucle automático de cortes BMS.
+    """
+    st.markdown("---")
+    with st.expander("Acciones GX (opcional · dry-run por defecto)", expanded=False):
+        st.caption(
+            "Lectura primero. Las escrituras requieren casilla de confirmación. "
+            "Sin `manual_write_enabled` solo se simula (dry-run). "
+            "No usa el supervisor automático de cortes BMS."
+        )
+        pause = st.checkbox(
+            "Pausar auto-refresh mientras uso Acciones",
+            value=bool(st.session_state.get("acciones_pause", False)),
+            key="acciones_pause_box",
+        )
+        st.session_state["acciones_pause"] = pause
+
+        write_on = manual_writes_enabled(cfg)
+        st.markdown(
+            f"**Escritura manual:** "
+            f"{'⚠️ HABILITADA (`manual_write_enabled`)' if write_on else 'OFF → solo dry-run (recomendado)'}"
+        )
+        if mode != MODE_REAL:
+            st.info("Cambia a Modo Planta Real para leer/escribir el GX. En laboratorio solo se muestra la UI.")
+
+        insights = None
+        if st.button("Leer estado ESS / relés", key="acciones_read_ess"):
+            st.session_state["acciones_pause"] = True
+            if mode != MODE_REAL:
+                st.warning("Modo laboratorio: no hay Modbus real.")
+            else:
+                insights = read_ess_insights(cfg)
+                st.session_state["acciones_last_insights"] = insights
+
+        insights = st.session_state.get("acciones_last_insights") or insights
+        if insights:
+            if insights.get("ok"):
+                s = insights.get("summary") or {}
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Modo ESS (Hub4)", s.get("hub4_mode_label", "N/D"))
+                    st.caption(f"reg 2902 = {s.get('hub4_mode')}")
+                with c2:
+                    sp = s.get("ac_power_setpoint_w")
+                    st.metric("Consigna red", f"{sp} W" if sp is not None else "N/D")
+                    st.caption("reg 2700 AcPowerSetPoint")
+                with c3:
+                    r0 = s.get("relay_0_closed")
+                    r1 = s.get("relay_1_closed")
+                    st.metric(
+                        "Relés GX",
+                        f"R0={'Cerrado' if r0 else 'Abierto' if r0 is not None else 'N/D'} · "
+                        f"R1={'Cerrado' if r1 else 'Abierto' if r1 is not None else 'N/D'}",
+                    )
+                    st.caption("regs 806 / 807")
+                st.caption(
+                    f"BatteryLife: {s.get('battery_life_label')} · "
+                    f"SoC mínimo: {s.get('min_soc_limit_pct')}% · "
+                    f"Carga/Descarga max: {s.get('max_charge_pct')}% / {s.get('max_discharge_pct')}%"
+                )
+            else:
+                st.error(f"No se pudo leer ESS: {insights.get('error')}")
+
+        st.markdown("##### 1 · Consigna de red (reg 2700)")
+        st.caption(
+            "Efecto: pide al ESS importar (+) o exportar (−) potencia de red (W). "
+            "Documentado en Victron AcPowerSetPoint / ESS mode 2–3."
+        )
+        setpoint_w = st.number_input(
+            "Consigna (W)",
+            min_value=-10000,
+            max_value=10000,
+            value=50,
+            step=50,
+            key="acciones_setpoint_w",
+        )
+        conf_sp = st.checkbox(
+            "Confirmo que entiendo el efecto sobre la consigna de red",
+            key="acciones_confirm_setpoint",
+        )
+        if st.button(
+            "Ejecutar consigna" if write_on else "Simular consigna (dry-run)",
+            key="acciones_run_setpoint",
+        ):
+            st.session_state["acciones_pause"] = True
+            if mode != MODE_REAL:
+                st.warning("Solo disponible en Modo Planta Real.")
+            else:
+                result = action_set_grid_setpoint(cfg, int(setpoint_w), confirmed=conf_sp)
+                if result.get("ok"):
+                    st.success(result["message"])
+                else:
+                    st.error(result.get("message") or result.get("error"))
+
+        st.markdown("##### 2 · Modo ESS / Hub4Mode (reg 2902)")
+        st.caption(
+            "Efecto: cambia el modo ESS del GX (1=compensación de fase, 2=sin compensación, "
+            "3=control externo). Documentado en attributes.csv Hub4Mode."
+        )
+        mode_options = {f"{k} — {v}": k for k, v in HUB4_MODE_LABELS.items()}
+        mode_label = st.selectbox(
+            "Nuevo modo ESS",
+            list(mode_options.keys()),
+            index=0,
+            key="acciones_hub4_label",
+        )
+        conf_mode = st.checkbox(
+            "Confirmo el cambio de modo ESS",
+            key="acciones_confirm_hub4",
+        )
+        if st.button(
+            "Ejecutar modo ESS" if write_on else "Simular modo ESS (dry-run)",
+            key="acciones_run_hub4",
+        ):
+            st.session_state["acciones_pause"] = True
+            if mode != MODE_REAL:
+                st.warning("Solo disponible en Modo Planta Real.")
+            else:
+                result = action_set_hub4_mode(
+                    cfg, mode_options[mode_label], confirmed=conf_mode
+                )
+                if result.get("ok"):
+                    st.success(result["message"])
+                else:
+                    st.error(result.get("message") or result.get("error"))
+
+        st.markdown("##### 3 · Relé GX 0 (reg 806)")
+        st.caption(
+            "Efecto: abre/cierra el relé 0 del Color Control / Cerbo. "
+            "Comprueba qué carga está cableada antes de escritura real. "
+            "Documentado: system /Relay/0/State."
+        )
+        relay_closed = st.selectbox(
+            "Estado deseado relé 0",
+            ["Abrir (0)", "Cerrar (1)"],
+            key="acciones_relay_state",
+        )
+        conf_relay = st.checkbox(
+            "Confirmo la conmutación del relé GX",
+            key="acciones_confirm_relay",
+        )
+        if st.button(
+            "Ejecutar relé" if write_on else "Simular relé (dry-run)",
+            key="acciones_run_relay",
+        ):
+            st.session_state["acciones_pause"] = True
+            if mode != MODE_REAL:
+                st.warning("Solo disponible en Modo Planta Real.")
+            else:
+                result = action_set_relay(
+                    cfg,
+                    0,
+                    closed=(relay_closed.startswith("Cerrar")),
+                    confirmed=conf_relay,
+                )
+                if result.get("ok"):
+                    st.success(result["message"])
+                else:
+                    st.error(result.get("message") or result.get("error"))
+
+        st.caption(
+            "Mapa auditado de esta planta: `docs/VICTRON_MODBUS_PROBE.md`. "
+            "Regs 2704/2705/2706 (cortes DVCC) siguen bloqueados."
+        )
+
+
 def render_dashboard(cfg: dict, mode: str, telemetry: dict):
     level, message, _ = evaluate_plant_status(telemetry, cfg)
     process_whatsapp_alerts(telemetry, cfg, level)
@@ -1724,6 +1903,7 @@ def render_dashboard(cfg: dict, mode: str, telemetry: dict):
 
     render_status_panel(level, message)
     render_battery_cells_panel(telemetry.get("batteries") or [], cfg)
+    render_acciones_panel(cfg, mode)
 
     source_label = {
         "simulated": "telemetría simulada (laboratorio)",
@@ -1797,9 +1977,15 @@ def main():
             unsafe_allow_html=True,
         )
         write_on = bool(cfg.get("safety_write_enabled", False))
+        manual_on = bool(cfg.get("manual_write_enabled", False))
         st.markdown(
             f'**Cortes Victron:** <span style="color:{"#ff4757" if write_on else "#00ff88"};'
             f'font-weight:700;">{"ON experimental" if write_on else "OFF (dry-run)"}</span>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'**Acciones manuales:** <span style="color:{"#ff9f1c" if manual_on else "#00ff88"};'
+            f'font-weight:700;">{"ON" if manual_on else "dry-run"}</span>',
             unsafe_allow_html=True,
         )
         st.caption("No es un BMS certificado. Ver docs/SAFETY_DISCLAIMER.md")
@@ -1814,8 +2000,10 @@ def main():
     render_dashboard(cfg, mode, telemetry)
 
     # Auto-refresh sin duplicar widget keys (st.rerun reemplaza al while True).
-    # Pausa el refresco mientras hay una celda seleccionada para no perder el detalle.
-    if st.session_state.get("selected_cell") is None:
+    # Pausa el refresco mientras hay una celda seleccionada o Acciones activas.
+    if st.session_state.get("selected_cell") is None and not st.session_state.get(
+        "acciones_pause"
+    ):
         time.sleep(interval)
         st.rerun()
 

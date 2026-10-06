@@ -34,12 +34,13 @@ def test_imports() -> None:
     import config_loader  # noqa: F401
     import jk_bms_client  # noqa: F401
     import launcher  # noqa: F401
+    import victron_gx_actions  # noqa: F401
     import victron_industrial_bms_safety  # noqa: F401
 
     # bms_web_monitor importa streamlit; si falta, el smoke lo reporta.
     import bms_web_monitor  # noqa: F401
 
-    _ok("imports: config_loader, jk_bms_client, launcher, safety, web_monitor")
+    _ok("imports: config_loader, jk_bms_client, launcher, gx_actions, safety, web_monitor")
 
 
 def test_config_defaults() -> None:
@@ -51,13 +52,15 @@ def test_config_defaults() -> None:
         _fail("safety_write_enabled debe ser false por defecto en config.example.json")
     if cfg.get("safety_write_registers_confirmed", True) is not False:
         _fail("safety_write_registers_confirmed debe ser false por defecto")
+    if cfg.get("manual_write_enabled", True) is not False:
+        _fail("manual_write_enabled debe ser false por defecto (Acciones dry-run)")
     if cfg.get("web_auth_required_on_lan", False) is not True:
         _fail("web_auth_required_on_lan debe ser true por defecto")
     if cfg.get("battery_source") not in ("victron", "gx_can"):
         _fail(
             f"battery_source ejemplo debe preferir victron/gx_can, got {cfg.get('battery_source')}"
         )
-    _ok("defaults: dry-run safety + regs bloqueados + LAN auth + battery_source=victron")
+    _ok("defaults: dry-run safety + Acciones + regs bloqueados + LAN auth + battery_source=victron")
 
 
 def test_jk_sim_not_online() -> None:
@@ -364,14 +367,79 @@ def test_victron_battery_source_no_jk_online() -> None:
 
 
 def test_docs_present() -> None:
-    for rel in ("LICENSE", "docs/SAFETY_DISCLAIMER.md", ".streamlit/secrets.toml.example"):
+    for rel in (
+        "LICENSE",
+        "docs/SAFETY_DISCLAIMER.md",
+        "docs/VICTRON_MODBUS_PROBE.md",
+        ".streamlit/secrets.toml.example",
+    ):
         if not (ROOT / rel).exists():
             _fail(f"falta {rel}")
     text = (ROOT / "docs/SAFETY_DISCLAIMER.md").read_text(encoding="utf-8")
     for needle in ("2704", "safety_write_registers_confirmed", "celdas no disponibles"):
         if needle not in text:
             _fail(f"SAFETY_DISCLAIMER debe documentar: {needle}")
-    _ok("LICENSE + SAFETY_DISCLAIMER + secrets example presentes")
+    probe = (ROOT / "docs/VICTRON_MODBUS_PROBE.md").read_text(encoding="utf-8")
+    for needle in ("2700", "2902", "806", "manual_write_enabled"):
+        if needle not in probe:
+            _fail(f"VICTRON_MODBUS_PROBE debe documentar: {needle}")
+    _ok("LICENSE + SAFETY_DISCLAIMER + MODBUS_PROBE + secrets example presentes")
+
+
+def test_gx_actions_dry_run_and_blocks() -> None:
+    """Acciones opcionales: dry-run por defecto; 2704 bloqueado; confirmación obligatoria."""
+    from victron_gx_actions import (
+        BLOCKED_AUTO_CUTOFF_REGS,
+        action_set_grid_setpoint,
+        action_set_hub4_mode,
+        action_set_relay,
+        build_write_preview,
+        execute_manual_write,
+    )
+
+    cfg = {
+        "victron_host": "127.0.0.1",
+        "modbus_port": 502,
+        "victron_unit_id": 100,
+        "manual_write_enabled": False,
+    }
+    assert 2704 in BLOCKED_AUTO_CUTOFF_REGS
+
+    prev = build_write_preview(cfg, 2704, 0, "cutoff")
+    assert prev.blocked_reason is not None
+    assert prev.would_write is False
+
+    no_conf = action_set_grid_setpoint(cfg, 50, confirmed=False)
+    assert no_conf["ok"] is False
+    assert no_conf["error"] == "not_confirmed"
+
+    dry = action_set_grid_setpoint(cfg, 50, confirmed=True)
+    assert dry["ok"] is True
+    assert dry["dry_run"] is True
+    assert dry["written"] is False
+
+    dry_mode = action_set_hub4_mode(cfg, 1, confirmed=True)
+    assert dry_mode["ok"] is True and dry_mode["written"] is False
+
+    dry_relay = action_set_relay(cfg, 0, False, confirmed=True)
+    assert dry_relay["ok"] is True and dry_relay["written"] is False
+
+    blocked = execute_manual_write(cfg, 2704, 0, "no", confirmed=True)
+    assert blocked["ok"] is False
+    assert blocked["error"] == "blocked_register"
+
+    # Con manual_write_enabled pero sin tocar la red: mock del cliente.
+    cfg_on = {**cfg, "manual_write_enabled": True}
+    with patch("victron_gx_actions.ModbusClient") as mock_cls:
+        mock = mock_cls.return_value
+        mock.open.return_value = True
+        mock.write_single_register.return_value = True
+        written = action_set_grid_setpoint(cfg_on, 100, confirmed=True)
+        assert written["ok"] is True
+        assert written["written"] is True
+        mock.write_single_register.assert_called_once()
+
+    _ok("gx_actions: dry-run default, confirm gate, 2704 blocked, write path gated")
 
 
 def main() -> int:
@@ -389,6 +457,7 @@ def main() -> int:
         test_classify_data_state,
         test_victron_battery_source_no_jk_online,
         test_docs_present,
+        test_gx_actions_dry_run_and_blocks,
     ]
     failed = 0
     for fn in tests:
