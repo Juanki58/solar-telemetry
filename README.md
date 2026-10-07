@@ -14,6 +14,7 @@ El monitor real (Modbus / JK) se instala en Windows en 2 clics.
 | Demo HTML | [htmlpreview](https://htmlpreview.github.io/?https://github.com/Juanki58/solar-telemetry/blob/main/docs/index.html) |
 | App local (PC) | `http://127.0.0.1:8501` tras instalar |
 | App Android | Carpeta [`android/`](android/) — WebView hacia el PC en LAN |
+| Guía JK RS485 + gateway | [`docs/JK_RS485_GATEWAY.md`](docs/JK_RS485_GATEWAY.md) |
 | Aviso de seguridad | [`docs/SAFETY_DISCLAIMER.md`](docs/SAFETY_DISCLAIMER.md) |
 | Licencia | [`LICENSE`](LICENSE) (MIT) |
 
@@ -170,7 +171,8 @@ El dashboard muestra un **banner muy visible** cuando los datos son simulados o 
 
 | Clave | Default | Significado |
 |-------|---------|-------------|
-| `battery_source` | `victron` | Origen de batería: `victron` / `gx_can` (pack vía GX, típico JK+CAN) o `jk_tcp` (Modbus TCP del JK con C1…C16) |
+| `battery_source` | `hybrid` (ejemplo) | `victron` / `gx_can` (solo pack GX), `jk_tcp` (todo por JK TCP), o **`hybrid`** (pack Victron + celdas JK TCP vía gateway) |
+| `jk_port` | `502` | Puerto Modbus TCP del gateway; **probar 502 primero** (no asumir 6481) |
 | `safety_write_enabled` | `false` | Si `true`, el supervisor *puede* escribir en Victron (experimental; dry-run por defecto) |
 | `manual_write_enabled` | `false` | Si `true`, el panel **Acciones** puede escribir regs auditados (2700/2902/806) tras confirmación. Independiente del loop BMS |
 | `safety_require_jk_online` | `true` | Exige JK online para supervisión; **no** relaja escrituras sobre sim/fallback |
@@ -178,17 +180,37 @@ El dashboard muestra un **banner muy visible** cuando los datos son simulados o 
 | `web_auth_password` | `""` | Password del monitor Streamlit (obligatorio en LAN) |
 | `web_auth_required_on_lan` | `true` | Bloquea UI si bind `0.0.0.0` sin password |
 
-### JK BMS en CAN al Color Control / Cerbo (DVCC)
+### Hybrid recomendado: Victron pack + JK celdas (RS485 gateway)
 
-Si los JK **no** tienen IP propia en LAN y van por **cable CAN** al Color Control GX:
+Camino típico cuando el JK ya habla **CAN al Cerbo** y quieres **C1…C16** sin romper DVCC:
 
-- Pon `"battery_source": "victron"` (alias: `"gx_can"`) — es el **default** de `config.example.json`.
-- **No** uses `jk_host` / TCP `6481`: esos timeouts son esperados (no hay servicio Modbus en `.34`/`.35`).
-- El monitor lee del GX (p. ej. `192.168.1.37`) SoC, voltaje de pack, corriente, potencia y temp si el unit de batería está configurado.
-- **Celdas individuales (C1…C16) no están disponibles** por Modbus estándar del servicio de batería agregado. La UI muestra vacío / «celdas no disponibles» (`jk_online` permanece `false`).
-- Si `jk_tcp` falla o está en cooldown, **no** se inventan celdas sinusoidales ni desde el voltaje de pack.
-- Para celdas celda-a-celda hace falta un JK con Modbus TCP en red (`battery_source: "jk_tcp"`).
-- Mapa Modbus auditado (ESS, relés, unit batería): [`docs/VICTRON_MODBUS_PROBE.md`](docs/VICTRON_MODBUS_PROBE.md).
+1. Guía de cableado y compra: [`docs/JK_RS485_GATEWAY.md`](docs/JK_RS485_GATEWAY.md).
+2. En la app JK: protocolo **001 Modbus** en **RS485-1**.
+3. Gateway tipo **USR-TCP232** / **Waveshare RS485 to ETH** (Modbus TCP) → LAN.
+4. En `config.json`:
+
+```json
+"battery_source": "hybrid",
+"soc_source": "victron",
+"jk_port": 502,
+"batteries": [
+  { "name": "Batería 1", "jk_host": "IP_DEL_GATEWAY", "jk_port": 502, "jk_unit_id": 1 }
+]
+```
+
+- Pack SoC/V/I: Victron GX. Celdas: gateway JK. CAN **intacto**.
+- Placeholders `IP_DE_TU_GATEWAY_*` en `config.example.json` no disparan timeouts (host “pendiente”).
+- Con 2 baterías: un gateway (o unit ID) por BMS; ver la guía.
+
+### Solo pack: JK en CAN al Color Control / Cerbo (DVCC)
+
+Si **no** hay gateway RS485 y los JK van solo por **CAN**:
+
+- `"battery_source": "victron"` (alias: `"gx_can"`).
+- **No** configures `jk_host` / TCP: no hay Modbus en el BMS.
+- **Celdas C1…C16 no disponibles** por Modbus del pack agregado.
+- Si `jk_tcp`/`hybrid` falla o está en cooldown, **no** se inventan celdas.
+- Mapa Modbus GX: [`docs/VICTRON_MODBUS_PROBE.md`](docs/VICTRON_MODBUS_PROBE.md).
 
 ### Panel Acciones (ESS / relé)
 

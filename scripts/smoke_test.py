@@ -56,11 +56,13 @@ def test_config_defaults() -> None:
         _fail("manual_write_enabled debe ser false por defecto (Acciones dry-run)")
     if cfg.get("web_auth_required_on_lan", False) is not True:
         _fail("web_auth_required_on_lan debe ser true por defecto")
-    if cfg.get("battery_source") not in ("victron", "gx_can"):
+    if cfg.get("battery_source") not in ("victron", "gx_can", "hybrid"):
         _fail(
-            f"battery_source ejemplo debe preferir victron/gx_can, got {cfg.get('battery_source')}"
+            f"battery_source ejemplo debe ser victron/gx_can/hybrid, got {cfg.get('battery_source')}"
         )
-    _ok("defaults: dry-run safety + Acciones + regs bloqueados + LAN auth + battery_source=victron")
+    if cfg.get("battery_source") == "hybrid" and int(cfg.get("jk_port", 0)) != 502:
+        _fail("ejemplo hybrid debe probar jk_port=502 primero (no 6481)")
+    _ok("defaults: dry-run safety + Acciones + regs bloqueados + LAN auth + battery_source ok")
 
 
 def test_jk_sim_not_online() -> None:
@@ -170,7 +172,7 @@ def _minimal_safety_cfg(**overrides) -> dict:
         "safety_write_enabled": False,
         "safety_require_jk_online": True,
         "safety_write_registers_confirmed": False,
-        "jk_port": 6481,
+        "jk_port": 502,
         "battery_source": "jk_tcp",
         "batteries": [
             {"name": "B1", "jk_host": "127.0.0.1", "jk_port": 6499, "cell_count": 16}
@@ -366,11 +368,85 @@ def test_victron_battery_source_no_jk_online() -> None:
     _ok("victron battery_source: pack sin celdas, jk_online=False")
 
 
+def test_hybrid_pack_victron_cells_jk() -> None:
+    """hybrid: SoC/pack de Victron; celdas solo si JK TCP live; placeholders no timeout."""
+    from jk_bms_client import (
+        fetch_all_batteries,
+        merge_battery_telemetry,
+        resolve_battery_source,
+        uses_hybrid_battery,
+        uses_jk_cell_source,
+        uses_victron_battery,
+    )
+
+    cfg = {
+        "battery_source": "hybrid",
+        "soc_source": "victron",
+        "jk_port": 502,
+        "batteries": [
+            {
+                "id": "b1",
+                "name": "B1",
+                "jk_host": "IP_DE_TU_GATEWAY_1",
+                "jk_port": 502,
+                "cell_count": 16,
+                "enabled": True,
+            }
+        ],
+    }
+    assert resolve_battery_source(cfg) == "hybrid"
+    assert uses_hybrid_battery(cfg)
+    assert uses_jk_cell_source(cfg)
+    assert not uses_victron_battery(cfg)
+
+    system = {
+        "soc": 41.0,
+        "pack_voltage": 52.9,
+        "battery_current_a": 3.1,
+        "battery_power_w": 164.0,
+        "source": "modbus",
+    }
+    banks = fetch_all_batteries(cfg, simulated=False, system_telemetry=system)
+    assert len(banks) == 1
+    assert banks[0]["data_source"] == "jk_unconfigured"
+    assert banks[0]["cells"] == []
+    assert banks[0]["jk_online"] is False
+
+    merged = merge_battery_telemetry(system, banks, cfg)
+    assert merged["soc"] == 41.0
+    assert merged["pack_voltage"] == 52.9
+    assert merged["cells_available"] is False
+    assert merged["cell_voltages"] == []
+    assert "hybrid" in (merged.get("cell_voltage_source") or "").lower()
+
+    # Celdas live → cells_available; SoC sigue siendo Victron.
+    live_bank = {
+        "id": "b1",
+        "name": "B1",
+        "cells": [3.30 + i * 0.001 for i in range(16)],
+        "cell_voltages": [3.30 + i * 0.001 for i in range(16)],
+        "data_source": "jk_modbus",
+        "jk_online": True,
+        "jk_host": "192.168.1.50",
+        "error": None,
+        "max_pack_temperature": 28.0,
+        "min_pack_temperature": 27.0,
+        "soc": 99.0,
+    }
+    merged_live = merge_battery_telemetry(system, [live_bank], cfg)
+    assert merged_live["cells_available"] is True
+    assert len(merged_live["cell_voltages"]) == 16
+    assert merged_live["soc"] == 41.0  # Victron, no 99% del JK
+    assert "hybrid" in (merged_live.get("cell_voltage_source") or "").lower()
+    _ok("hybrid: pack Victron + celdas JK TCP (placeholders seguros)")
+
+
 def test_docs_present() -> None:
     for rel in (
         "LICENSE",
         "docs/SAFETY_DISCLAIMER.md",
         "docs/VICTRON_MODBUS_PROBE.md",
+        "docs/JK_RS485_GATEWAY.md",
         ".streamlit/secrets.toml.example",
     ):
         if not (ROOT / rel).exists():
@@ -383,7 +459,11 @@ def test_docs_present() -> None:
     for needle in ("2700", "2902", "806", "manual_write_enabled"):
         if needle not in probe:
             _fail(f"VICTRON_MODBUS_PROBE debe documentar: {needle}")
-    _ok("LICENSE + SAFETY_DISCLAIMER + MODBUS_PROBE + secrets example presentes")
+    gw = (ROOT / "docs/JK_RS485_GATEWAY.md").read_text(encoding="utf-8")
+    for needle in ("001", "Modbus", "502", "hybrid", "USR-TCP232", "Waveshare", "CAN"):
+        if needle not in gw:
+            _fail(f"JK_RS485_GATEWAY debe documentar: {needle}")
+    _ok("LICENSE + SAFETY + MODBUS_PROBE + JK_RS485_GATEWAY + secrets example presentes")
 
 
 def test_gx_actions_dry_run_and_blocks() -> None:
@@ -456,6 +536,7 @@ def main() -> int:
         test_safety_live_write_still_needs_enabled,
         test_classify_data_state,
         test_victron_battery_source_no_jk_online,
+        test_hybrid_pack_victron_cells_jk,
         test_docs_present,
         test_gx_actions_dry_run_and_blocks,
     ]

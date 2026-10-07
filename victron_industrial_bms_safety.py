@@ -97,10 +97,11 @@ class VictronBmsSafetySupervisor:
 
     def read_bms_telemetry(self) -> dict[str, Any]:
         """
-        Lee telemetría REAL de bancos JK (o pack Victron si battery_source=victron).
+        Lee telemetría REAL de bancos JK (jk_tcp/hybrid) o pack Victron (victron/gx_can).
 
         Si no hay datos JK fiables, marca source=unreliable y no permite writes.
-        En modo Victron/CAN no hay celdas: los cortes por celda quedan denegados.
+        En modo Victron/CAN puro no hay celdas: los cortes por celda quedan denegados.
+        En hybrid, los cortes por celda exigen lectura JK TCP live (como jk_tcp).
 
         Importante: `safety_require_jk_online=false` NO autoriza write_allowed
         sobre simulación, fallback o fuentes desconocidas.

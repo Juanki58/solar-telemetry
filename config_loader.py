@@ -25,9 +25,10 @@ CORE_DEFAULTS: dict[str, Any] = {
     "v_cell_critical_low": 2.60,
     "t_critical_high": 55.0,
     "t_charge_low": 0.0,
-    "jk_port": 6481,
+    # Probar 502 primero (gateways Modbus TCP estándar); 6481 solo si el fabricante lo documenta.
+    "jk_port": 502,
     "cell_count": 16,
-    # Preferido en plantas GX/CAN. Usar jk_tcp solo con BMS Modbus TCP en LAN.
+    # Preferido en plantas GX/CAN. hybrid = pack Victron + celdas JK TCP (gateway RS485).
     "battery_source": "victron",
     "batteries": [],
 }
@@ -67,15 +68,30 @@ def normalize_config(cfg: dict[str, Any], *, loaded_keys: set[str] | None = None
         cfg["battery_source"] = "victron"
     elif raw_src in ("jk_tcp", "jk", "jk_bms", "modbus_jk"):
         cfg["battery_source"] = "jk_tcp"
+    elif raw_src in (
+        "hybrid",
+        "victron_jk",
+        "victron+jk",
+        "victron_jk_tcp",
+        "dual",
+        "pack_victron_cells_jk",
+    ):
+        cfg["battery_source"] = "hybrid"
     else:
         # Desconocido → victron (pack honesto) en vez de forzar jk_tcp con celdas fake.
         cfg["battery_source"] = "victron"
 
-    # En modo Victron/CAN no tiene sentido insistir en hosts JK TCP muertos.
+    # En modo Victron/CAN puro no insistir en hosts JK TCP (evita timeouts).
     if cfg["battery_source"] in ("victron", "gx_can"):
         cfg.setdefault("battery_pack_name", "Batería (Victron GX / CAN)")
-        # No auto-generar batteries desde jk_host_* (evita timeouts a .34/.35).
+        # No auto-generar batteries desde jk_host_* .
         return cfg
+
+    if cfg["battery_source"] == "hybrid":
+        cfg.setdefault(
+            "battery_pack_name",
+            "Batería (Victron pack + JK celdas)",
+        )
 
     jk_hosts = [cfg.get(f"jk_host_{i}") for i in range(1, 9) if cfg.get(f"jk_host_{i}")]
     if jk_hosts and not cfg.get("batteries"):
@@ -83,7 +99,7 @@ def normalize_config(cfg: dict[str, Any], *, loaded_keys: set[str] | None = None
             {
                 "name": f"Batería {i}",
                 "jk_host": host,
-                "jk_port": cfg.get("jk_port", 6481),
+                "jk_port": cfg.get("jk_port", 502),
             }
             for i, host in enumerate(jk_hosts, start=1)
         ]
@@ -93,7 +109,7 @@ def normalize_config(cfg: dict[str, Any], *, loaded_keys: set[str] | None = None
         battery.setdefault("enabled", True)
         battery.setdefault("cell_count", cfg.get("cell_count", 16))
         battery.setdefault("jk_unit_id", 1)
-        battery.setdefault("jk_port", cfg.get("jk_port", 6481))
+        battery.setdefault("jk_port", cfg.get("jk_port", 502))
         flat_host = cfg.get(f"jk_host_{idx + 1}")
         if flat_host:
             battery["jk_host"] = flat_host

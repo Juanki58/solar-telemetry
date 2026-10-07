@@ -1,9 +1,11 @@
 """
 Cliente Modbus TCP para JK BMS v19 — lectura de voltajes celda a celda.
 
-También soporta battery_source=victron|gx_can: cuando el JK va por CAN al
-Color Control / Cerbo (DVCC), no hay TCP :6481; se usan métricas de pack
-expuestas por Victron Modbus (sin celdas individuales).
+battery_source:
+  - victron | gx_can — pack vía Victron GX (JK en CAN/DVCC; sin celdas TCP)
+  - jk_tcp — pack + celdas solo desde JK Modbus TCP en LAN
+  - hybrid — pack/SoC/V/I desde Victron; celdas C1…C16 desde JK TCP
+    (RS485→Ethernet/WiFi gateway; CAN Victron intacto)
 
 Mapa de registros JK (holding, escala mV → V con factor 1000):
   0x1200  CellVol0..15   (16 celdas, UINT16 cada una)
@@ -34,13 +36,15 @@ JK_FAIL_COOLDOWN_S = 30.0
 BATTERY_SOURCE_JK_TCP = "jk_tcp"
 BATTERY_SOURCE_VICTRON = "victron"
 BATTERY_SOURCE_GX_CAN = "gx_can"
+BATTERY_SOURCE_HYBRID = "hybrid"
 _VICTRON_SOURCES = frozenset({BATTERY_SOURCE_VICTRON, BATTERY_SOURCE_GX_CAN})
+_JK_CELL_SOURCES = frozenset({BATTERY_SOURCE_JK_TCP, BATTERY_SOURCE_HYBRID})
 
 _JK_FAIL_CACHE: dict[str, float] = {}
 
 
 def resolve_battery_source(cfg: dict | None) -> str:
-    """victron (default, plantas GX/CAN) | gx_can | jk_tcp (Modbus BMS en LAN)."""
+    """victron | gx_can | jk_tcp | hybrid (pack Victron + celdas JK TCP)."""
     raw = str((cfg or {}).get("battery_source") or BATTERY_SOURCE_VICTRON).strip().lower()
     if raw in ("gx", "can", "victron_can", "gx_can"):
         return BATTERY_SOURCE_GX_CAN
@@ -48,14 +52,33 @@ def resolve_battery_source(cfg: dict | None) -> str:
         return BATTERY_SOURCE_VICTRON
     if raw in ("jk_tcp", "jk", "jk_bms", "modbus_jk"):
         return BATTERY_SOURCE_JK_TCP
-    if raw in _VICTRON_SOURCES:
+    if raw in (
+        "hybrid",
+        "victron_jk",
+        "victron+jk",
+        "victron_jk_tcp",
+        "dual",
+        "pack_victron_cells_jk",
+    ):
+        return BATTERY_SOURCE_HYBRID
+    if raw in _VICTRON_SOURCES or raw in _JK_CELL_SOURCES:
         return raw
     # Desconocido → pack Victron (honesto) en vez de inventar celdas JK TCP.
     return BATTERY_SOURCE_VICTRON
 
 
 def uses_victron_battery(cfg: dict | None) -> bool:
+    """True solo si el pack viene de Victron y NO se leen celdas JK TCP."""
     return resolve_battery_source(cfg) in _VICTRON_SOURCES
+
+
+def uses_hybrid_battery(cfg: dict | None) -> bool:
+    return resolve_battery_source(cfg) == BATTERY_SOURCE_HYBRID
+
+
+def uses_jk_cell_source(cfg: dict | None) -> bool:
+    """True si se intentan celdas vía Modbus TCP del JK (jk_tcp o hybrid)."""
+    return resolve_battery_source(cfg) in _JK_CELL_SOURCES
 
 
 def _jk_cache_key(bank_cfg: dict) -> str:
@@ -356,7 +379,7 @@ def fetch_all_batteries(
     sim_t: float | None = None,
     system_telemetry: dict | None = None,
 ) -> list[dict[str, Any]]:
-    """Lee bancos JK TCP o un pack Victron según battery_source."""
+    """Lee bancos JK TCP, pack Victron, o hybrid (JK celdas + pack en merge)."""
     if uses_victron_battery(cfg):
         if simulated and (system_telemetry is None or system_telemetry.get("source") != "simulated"):
             # Laboratorio sin telemetría de sistema: pack simulado vacío de celdas.
@@ -372,6 +395,7 @@ def fetch_all_batteries(
             return [build_victron_pack_bank(stub, cfg, simulated=True)]
         return [build_victron_pack_bank(system_telemetry, cfg, simulated=simulated)]
 
+    # jk_tcp y hybrid: celdas desde gateway/JK Modbus TCP.
     banks_cfg = normalize_battery_configs(cfg)
     return [read_jk_bms_bank(bank, simulated=simulated, sim_t=sim_t) for bank in banks_cfg]
 
@@ -439,10 +463,11 @@ def _resolve_system_soc(system_telemetry: dict, batteries: list[dict], cfg: dict
 
 
 def merge_battery_telemetry(system_telemetry: dict, batteries: list[dict], cfg: dict | None = None) -> dict:
-    """Combina telemetría Victron/simulada con datos JK por banco o pack GX."""
+    """Combina telemetría Victron/simulada con datos JK por banco, pack GX o hybrid."""
     cfg = cfg or {}
     merged = {**system_telemetry, "batteries": batteries}
-    merged["battery_source"] = resolve_battery_source(cfg)
+    src = resolve_battery_source(cfg)
+    merged["battery_source"] = src
     merged["cells_available"] = False
 
     soc, soc_label = _resolve_system_soc(system_telemetry, batteries, cfg)
@@ -469,7 +494,8 @@ def merge_battery_telemetry(system_telemetry: dict, batteries: list[dict], cfg: 
                 merged["pack_voltage"] = pack["pack_voltage"]
         return merged
 
-    # Solo bancos con lectura JK real aportan celdas a la telemetría agregada.
+    # jk_tcp / hybrid: solo bancos con lectura JK real aportan celdas.
+    # Pack SoC/V/I ya vienen de system_telemetry (Victron) en hybrid.
     # Fallback/unconfigured vienen vacíos; simulación de lab solo en modo simulated.
     online_banks = [
         b
@@ -506,9 +532,15 @@ def merge_battery_telemetry(system_telemetry: dict, batteries: list[dict], cfg: 
         merged["lowest_cell_voltage"] = min(all_cells)
         merged["cell_voltages"] = all_cells
         merged["cells_available"] = True
-        merged["cell_voltage_source"] = (
-            f"JK BMS v19 — {len(online_banks)}/{len(batteries)} bancos online"
-        )
+        if src == BATTERY_SOURCE_HYBRID:
+            merged["cell_voltage_source"] = (
+                f"Hybrid: pack Victron + JK TCP "
+                f"({len(online_banks)}/{len(batteries)} bancos online)"
+            )
+        else:
+            merged["cell_voltage_source"] = (
+                f"JK BMS v19 — {len(online_banks)}/{len(batteries)} bancos online"
+            )
     elif all_cells and lab_sim_banks and not online_banks:
         # Laboratorio explícito: celdas sintéticas, nunca como «medición».
         merged["highest_cell_voltage"] = max(all_cells)
@@ -522,9 +554,15 @@ def merge_battery_telemetry(system_telemetry: dict, batteries: list[dict], cfg: 
         merged["cell_voltages"] = []
         merged["cells_available"] = False
         n_fail = len(unavailable) or len(batteries)
-        merged["cell_voltage_source"] = (
-            f"Celdas no disponibles — JK TCP sin lectura ({n_fail} banco(s))"
-        )
+        if src == BATTERY_SOURCE_HYBRID:
+            merged["cell_voltage_source"] = (
+                f"Hybrid: pack Victron OK — celdas JK TCP pendientes "
+                f"({n_fail} banco(s) sin lectura; probar puerto 502)"
+            )
+        else:
+            merged["cell_voltage_source"] = (
+                f"Celdas no disponibles — JK TCP sin lectura ({n_fail} banco(s))"
+            )
 
     temps_high = [
         b["max_pack_temperature"]

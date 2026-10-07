@@ -30,8 +30,8 @@
   "battery_capacity_kwh": 10.0,
   "battery_bank_mode": "parallel",
   "soc_source": "victron",
-  "battery_source": "victron",
-  "battery_pack_name": "Batería (Victron GX / CAN)",
+  "battery_source": "hybrid",
+  "battery_pack_name": "Batería (Victron pack + JK celdas)",
   "soc_alert_warning": 20.0,
   "soc_alert_critical": 10.0,
   "whatsapp_alerts_enabled": false,
@@ -44,9 +44,9 @@
   "battery_unit_id": null,
   "modbus_reg_battery_temperature": 262,
   "modbus_reg_battery_temperature_scale": 10,
-  "jk_host_1": "192.168.1.34",
-  "jk_host_2": "192.168.1.35",
-  "jk_port": 6481,
+  "jk_host_1": "IP_DE_TU_GATEWAY_1",
+  "jk_host_2": "IP_DE_TU_GATEWAY_2",
+  "jk_port": 502,
   "safety_write_enabled": false,
   "safety_require_jk_online": true,
   "safety_write_registers_confirmed": false,
@@ -56,14 +56,22 @@
   "web_auth_required_on_lan": true,
   "batteries": [
     {
+      "id": "bateria_1",
       "name": "Batería 1",
-      "jk_host": "192.168.1.34",
-      "jk_port": 6481
+      "enabled": true,
+      "cell_count": 16,
+      "jk_host": "IP_DE_TU_GATEWAY_1",
+      "jk_port": 502,
+      "jk_unit_id": 1
     },
     {
+      "id": "bateria_2",
       "name": "Batería 2",
-      "jk_host": "192.168.1.35",
-      "jk_port": 6481
+      "enabled": true,
+      "cell_count": 16,
+      "jk_host": "IP_DE_TU_GATEWAY_2",
+      "jk_port": 502,
+      "jk_unit_id": 1
     }
   ]
 }

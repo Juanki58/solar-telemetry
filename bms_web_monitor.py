@@ -101,7 +101,7 @@ WEB_DEFAULTS = {
     "battery_capacity_kwh_per_unit": 10.0,
     "battery_bank_mode": "parallel",
     "soc_source": "victron",
-    # Preferido en plantas GX/CAN (JK sin TCP). Usar jk_tcp solo con Modbus :6481.
+    # Preferido pack-only: victron. Celdas+pack: hybrid (gateway RS485→TCP :502).
     "battery_source": "victron",
     "battery_pack_name": "Batería (Victron GX / CAN)",
     "soc_alert_warning": 20.0,
@@ -438,7 +438,8 @@ def render_battery_cells_panel(batteries: list[dict], cfg: dict):
                 )
             st.info(
                 "Celdas individuales no disponibles por este camino. "
-                "Para ver C1…C16 hace falta JK con Modbus TCP (`battery_source: jk_tcp`)."
+                "Para C1…C16 con CAN Victron intacto: gateway RS485 + "
+                '`battery_source: "hybrid"` (ver docs/JK_RS485_GATEWAY.md).'
             )
         return
 
@@ -586,8 +587,9 @@ def render_cell_health_sidebar(telemetry: dict, cfg: dict):
         with st.expander("ℹ️ ¿Por qué no hay celdas?"):
             st.write(
                 "Con JK en CAN al Color Control, Victron Modbus solo publica el servicio "
-                "de batería agregado (V/I/SoC/P). Los voltajes celda a celda requieren "
-                "`battery_source: jk_tcp` con el BMS en red."
+                "de batería agregado (V/I/SoC/P). Para C1…C16 sin tocar el CAN: "
+                'gateway RS485→LAN y `battery_source: "hybrid"` '
+                "(docs/JK_RS485_GATEWAY.md)."
             )
         return
 
@@ -1570,13 +1572,22 @@ def render_data_honesty_banners(mode: str, telemetry: dict, cfg: dict):
             unsafe_allow_html=True,
         )
     elif state == "mixed_fallback":
+        if bat_src == "hybrid":
+            tip = (
+                "Hybrid: rellena <code>jk_host</code> del gateway y prueba puerto "
+                "<b>502</b> (docs/JK_RS485_GATEWAY.md)."
+            )
+        else:
+            tip = (
+                "Si solo hay CAN al Color Control (sin gateway), usa "
+                '<code>battery_source: "victron"</code>.'
+            )
         st.markdown(
             '<div class="alert-bar" style="background:#3d2a00;border:2px solid #ff9f1c;'
             'font-size:1.0rem;padding:0.85rem 1rem;">'
             "⚠ <b>Victron OK, JK sin lectura real</b> — "
             "<b>celdas no disponibles</b> (no se inventan voltajes). "
-            "Si el JK va por CAN al Color Control, usa "
-            '<code>battery_source: "victron"</code> (no TCP 6481).</div>',
+            f"{tip}</div>",
             unsafe_allow_html=True,
         )
     else:
@@ -1584,6 +1595,15 @@ def render_data_honesty_banners(mode: str, telemetry: dict, cfg: dict):
             live_detail = (
                 "Victron Modbus pack · JK vía CAN — "
                 "<b>celdas individuales no disponibles</b>"
+            )
+        elif bat_src == "hybrid":
+            live_detail = (
+                "Hybrid: pack Victron + JK TCP"
+                + (
+                    " · <b>celdas online</b>"
+                    if telemetry.get("cells_available")
+                    else " · celdas pendientes de gateway"
+                )
             )
         else:
             live_detail = (
