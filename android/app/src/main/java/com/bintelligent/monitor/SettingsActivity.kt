@@ -22,7 +22,13 @@ class SettingsActivity : AppCompatActivity() {
         edit.setText(Prefs.getServerUrl(this))
 
         findViewById<MaterialButton>(R.id.btnSave).setOnClickListener {
-            Prefs.setServerUrl(this, edit.text?.toString().orEmpty())
+            val raw = edit.text?.toString().orEmpty()
+            if (!Prefs.isValidServerUrl(raw)) {
+                Toast.makeText(this, R.string.error_invalid_url, Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+            Prefs.setServerUrl(this, raw)
+            Prefs.setFirstRunDone(this)
             Toast.makeText(this, R.string.url_saved, Toast.LENGTH_SHORT).show()
             finish()
         }

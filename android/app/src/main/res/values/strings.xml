@@ -2,15 +2,26 @@
 <resources>
     <string name="app_name">B-Intelligent Monitor</string>
     <string name="settings_title">Configurar servidor</string>
-    <string name="settings_help">Introduce la URL del monitor Streamlit en tu PC (misma Wi‑Fi).\nEjemplo: http://192.168.1.40:8501\n\nEn el PC usa Start-BIntelligent-LAN.bat o:\nlauncher.py --host 0.0.0.0</string>
+    <string name="settings_help">URL del monitor Streamlit en tu PC (misma Wi‑Fi).\n\nEjemplo: http://192.168.1.40:8501\n\n1) En el PC: scripts\\windows\\Start-BIntelligent-LAN.bat\n2) Firewall: permite TCP 8501 (red privada)\n3) IP del PC: ipconfig → IPv4\n4) Contraseña LAN: web_auth_password en config.json (obligatoria en modo LAN)\n\nEl monitor real corre en el PC; esta app solo lo muestra.</string>
     <string name="server_url_hint">URL del servidor</string>
-    <string name="save">Guardar</string>
+    <string name="save">Guardar y conectar</string>
     <string name="retry">Reintentar</string>
     <string name="refresh">Actualizar</string>
-    <string name="use_demo">Abrir demo pública</string>
-    <string name="use_lan_hint">Plantilla LAN (:8501)</string>
-    <string name="url_saved">URL guardada</string>
-    <string name="first_run_title">Conectar al monitor</string>
-    <string name="first_run_message">Pon la IP LAN de tu PC con el puerto 8501. El monitor debe estar en marcha con --host 0.0.0.0.</string>
-    <string name="error_load">No se pudo cargar:\n%1$s\n\n%2$s\n\nComprueba que el PC y el móvil están en la misma Wi‑Fi, que el monitor escucha en 0.0.0.0:8501 y que el firewall permite el puerto 8501.</string>
+    <string name="use_demo">Demo HTML (sin planta)</string>
+    <string name="use_lan_hint">Plantilla LAN (192.168.1.100:8501)</string>
+    <string name="url_saved">URL guardada — reconectando</string>
+    <string name="first_run_title">Conectar al monitor del PC</string>
+    <string name="first_run_message">Sustituye la IP por la de tu PC (ipconfig) y el puerto 8501.\n\nEn el PC ejecuta Start-BIntelligent-LAN.bat, misma Wi‑Fi, firewall TCP 8501, y configura web_auth_password.</string>
+    <string name="error_invalid_url">URL no válida. Usa http://IP:8501 (ej. http://192.168.1.40:8501)</string>
+    <string name="error_bad_url">URL no válida:\n%1$s\n\nAbre Configurar servidor e introduce http://IP-DEL-PC:8501</string>
+    <string name="error_offline">Sin red.\n\nObjetivo: %1$s\n\nActiva Wi‑Fi y conéctate a la misma red que el PC. Luego pulsa Reintentar.</string>
+    <string name="error_http">El servidor respondió con error HTTP %2$d.\n\nURL: %1$s\n\nComprueba la URL y que Streamlit esté en marcha.</string>
+    <string name="error_load">No se pudo cargar el monitor.\n\nURL: %1$s\n\n%2$s\n\nChecklist:\n• PC: Start-BIntelligent-LAN.bat (0.0.0.0:8501)\n• Misma Wi‑Fi (no solo datos móviles)\n• Firewall Windows: TCP 8501\n• IP correcta (ipconfig)\n• Contraseña LAN configurada si aplica</string>
+    <string name="error_reason_offline">El móvil está sin conexión de red.</string>
+    <string name="error_reason_cellular">Solo hay datos móviles: el monitor del PC suele requerir la misma Wi‑Fi.</string>
+    <string name="error_reason_host">No se resuelve el host (IP o nombre incorrectos).</string>
+    <string name="error_reason_refused">Conexión rechazada: el PC no escucha en ese puerto, o el firewall bloquea 8501.</string>
+    <string name="error_reason_timeout">Tiempo de espera agotado: IP incorrecta, otra VLAN, o firewall.</string>
+    <string name="error_reason_unreachable">Dirección inalcanzable: distinta red Wi‑Fi o IP errónea.</string>
+    <string name="error_reason_generic">Error de red al abrir la URL.</string>
 </resources>

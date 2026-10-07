@@ -10,11 +10,13 @@ import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
@@ -62,8 +64,10 @@ class MainActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                errorPanel.visibility = View.GONE
-                webView.visibility = View.VISIBLE
+                if (url != null && url != "about:blank") {
+                    errorPanel.visibility = View.GONE
+                    webView.visibility = View.VISIBLE
+                }
             }
 
             override fun onReceivedError(
@@ -71,14 +75,31 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?,
                 error: WebResourceError?
             ) {
-                if (request?.isForMainFrame == true) {
+                if (request?.isForMainFrame != true) return
+                val desc = error?.description?.toString().orEmpty()
+                val code = error?.errorCode ?: 0
+                showError(humanizeLoadError(desc, code))
+                view?.stopLoading()
+                view?.loadUrl("about:blank")
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                if (request?.isForMainFrame != true) return
+                val code = errorResponse?.statusCode ?: 0
+                if (code in 400..599) {
                     showError(
                         getString(
-                            R.string.error_load,
+                            R.string.error_http,
                             Prefs.getServerUrl(this@MainActivity),
-                            error?.description?.toString().orEmpty()
+                            code
                         )
                     )
+                    view?.stopLoading()
+                    view?.loadUrl("about:blank")
                 }
             }
 
@@ -87,6 +108,21 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?
             ): Boolean = false
         }
+
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (webView.visibility == View.VISIBLE && webView.canGoBack()) {
+                        webView.goBack()
+                    } else {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                        isEnabled = true
+                    }
+                }
+            }
+        )
 
         if (!Prefs.isFirstRunDone(this)) {
             showFirstRunDialog()
@@ -98,7 +134,8 @@ class MainActivity : AppCompatActivity() {
     private fun showFirstRunDialog() {
         val input = layoutInflater.inflate(R.layout.dialog_server_url, null)
         val edit = input.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.inputUrl)
-        edit.setText(Prefs.getServerUrl(this))
+        edit.setText(Prefs.DEFAULT_HINT_URL)
+        edit.hint = Prefs.DEFAULT_HINT_URL
 
         AlertDialog.Builder(this)
             .setTitle(R.string.first_run_title)
@@ -106,7 +143,12 @@ class MainActivity : AppCompatActivity() {
             .setView(input)
             .setCancelable(false)
             .setPositiveButton(R.string.save) { _, _ ->
-                Prefs.setServerUrl(this, edit.text?.toString().orEmpty())
+                val raw = edit.text?.toString().orEmpty()
+                if (!Prefs.isValidServerUrl(raw)) {
+                    Prefs.setServerUrl(this, Prefs.DEFAULT_HINT_URL)
+                } else {
+                    Prefs.setServerUrl(this, raw)
+                }
                 Prefs.setFirstRunDone(this)
                 loadMonitor()
             }
@@ -120,13 +162,61 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadMonitor() {
         val url = Prefs.getServerUrl(this)
+        supportActionBar?.subtitle = url
+
+        if (!Prefs.isValidServerUrl(url)) {
+            showError(getString(R.string.error_bad_url, url))
+            return
+        }
+
+        when (NetworkUtil.status(this)) {
+            NetworkUtil.Status.OFFLINE -> {
+                showError(getString(R.string.error_offline, url))
+                return
+            }
+            NetworkUtil.Status.CELLULAR_ONLY -> {
+                // Still try — some users tether — but explain if it fails.
+            }
+            NetworkUtil.Status.WIFI_OR_ETHERNET -> Unit
+        }
+
         errorPanel.visibility = View.GONE
         webView.visibility = View.VISIBLE
         webView.loadUrl(url)
-        supportActionBar?.subtitle = url
+    }
+
+    private fun humanizeLoadError(description: String, errorCode: Int): String {
+        val url = Prefs.getServerUrl(this)
+        val lower = description.lowercase()
+        val detail = when {
+            NetworkUtil.status(this) == NetworkUtil.Status.OFFLINE ->
+                getString(R.string.error_reason_offline)
+            NetworkUtil.status(this) == NetworkUtil.Status.CELLULAR_ONLY ->
+                getString(R.string.error_reason_cellular)
+            errorCode == WebViewClient.ERROR_HOST_LOOKUP ||
+                lower.contains("err_name_not_resolved") ||
+                lower.contains("hostname") ->
+                getString(R.string.error_reason_host)
+            errorCode == WebViewClient.ERROR_CONNECT ||
+                lower.contains("err_connection_refused") ||
+                lower.contains("refused") ->
+                getString(R.string.error_reason_refused)
+            errorCode == WebViewClient.ERROR_TIMEOUT ||
+                lower.contains("timed out") ||
+                lower.contains("timeout") ->
+                getString(R.string.error_reason_timeout)
+            errorCode == WebViewClient.ERROR_IO ||
+                lower.contains("err_address_unreachable") ||
+                lower.contains("unreachable") ->
+                getString(R.string.error_reason_unreachable)
+            description.isNotBlank() -> description
+            else -> getString(R.string.error_reason_generic)
+        }
+        return getString(R.string.error_load, url, detail)
     }
 
     private fun showError(message: String) {
+        progress.visibility = View.GONE
         webView.visibility = View.GONE
         errorPanel.visibility = View.VISIBLE
         errorText.text = message
@@ -138,12 +228,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (Prefs.isFirstRunDone(this)) {
-            val current = webView.url
-            val wanted = Prefs.getServerUrl(this)
-            if (current == null || !current.startsWith(wanted)) {
-                loadMonitor()
-            }
+        if (!Prefs.isFirstRunDone(this)) return
+        val wanted = Prefs.getServerUrl(this)
+        val current = webView.url
+        val showingError = errorPanel.visibility == View.VISIBLE
+        // Reconnect after settings, first paint, or if the WebView was cleared on error.
+        if (showingError || current == null || current == "about:blank" || !current.startsWith(wanted)) {
+            loadMonitor()
         }
     }
 
@@ -167,15 +258,5 @@ class MainActivity : AppCompatActivity() {
             true
         }
         else -> super.onOptionsItemSelected(item)
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            @Suppress("DEPRECATION")
-            super.onBackPressed()
-        }
     }
 }

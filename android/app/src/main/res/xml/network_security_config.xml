@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Cleartext HTTP permitido: el monitor Streamlit en LAN no usa HTTPS. -->
+<!--
+  Cleartext HTTP is permitted for the whole app.
+
+  Why not "LAN-only": Android network_security_config matches hostnames/exact
+  domains — it cannot express private CIDR ranges (192.168.0.0/16, 10.0.0.0/8,
+  172.16.0.0/12). The monitor is typically http://192.168.x.x:8501 with a user-
+  chosen IP, so cleartext must be allowed broadly for the WebView to work.
+
+  Security: use only on trusted home/plant Wi‑Fi. Prefer LAN auth
+  (web_auth_password). Do not expose 0.0.0.0:8501 to the public Internet.
+-->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>

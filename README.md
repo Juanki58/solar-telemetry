@@ -109,7 +109,9 @@ Sin password, el launcher **bloquea** el arranque LAN (fail-closed). No uses `--
 4. Obtén la IP del PC (`ipconfig`, p. ej. `192.168.1.40`).
 5. En la app: menú → **Configurar servidor** → `http://192.168.1.40:8501`.
 
-PC y móvil deben compartir la misma Wi‑Fi. La primera ejecución pide la URL; también hay opción de abrir la **demo pública** sin planta.
+PC y móvil deben compartir la misma Wi‑Fi. La primera ejecución pide la URL; también hay opción de abrir la **demo pública** sin planta (no es el monitor en vivo).
+
+**HTTP claro:** la app Android permite cleartext de forma global (hace falta para `http://IP-LAN:8501`; Android no admite restringirlo a rangos privados CIDR). Usa solo en Wi‑Fi de confianza y con `web_auth_password`. Detalle: [`android/README.md`](android/README.md).
 
 ---
 
