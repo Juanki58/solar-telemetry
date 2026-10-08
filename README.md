@@ -1,5 +1,8 @@
 # Solar Telemetry — Victron / JK BMS
 
+> **Límite de repo:** esto es solo el monitor Victron/JK BMS.  
+> No es NaviCore (INS) ni el portfolio `automation-scripts`. Ver [`docs/REPO_BOUNDARY.md`](docs/REPO_BOUNDARY.md).
+
 Monitor profesional de **planta solar y salud de baterías LiFePO4** (Victron GX + JK BMS).
 
 [![Monitor demo](docs/preview-bms-monitor.png)](https://htmlpreview.github.io/?https://github.com/Juanki58/solar-telemetry/blob/main/docs/index.html)
